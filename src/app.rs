@@ -327,8 +327,8 @@ enum Command {
 }
 
 enum Response {
-    Batch {
-        outcomes: Vec<ProjectOutcome>,
+    Project(ProjectOutcome),
+    Done {
         full: bool,
     },
     Range {
@@ -354,13 +354,11 @@ impl Worker {
             {
                 Ok(runtime) => runtime,
                 Err(err) => {
-                    let _ = response_tx.send(Response::Batch {
-                        outcomes: vec![ProjectOutcome {
-                            order: 0,
-                            result: Err(Failure::local(format!("runtime: {err}"))),
-                        }],
-                        full: true,
-                    });
+                    let _ = response_tx.send(Response::Project(ProjectOutcome {
+                        order: 0,
+                        result: Err(Failure::local(format!("runtime: {err}"))),
+                    }));
+                    let _ = response_tx.send(Response::Done { full: true });
                     return;
                 }
             };
@@ -403,30 +401,28 @@ impl Worker {
                                     (index, result, cache, charts_at)
                                 });
                             }
-                            let mut outcomes = Vec::new();
                             while let Some(joined) = set.join_next().await {
-                                match joined {
+                                let outcome = match joined {
                                     Ok((index, result, cache, charts_at)) => {
                                         runtimes[index].cache = cache;
                                         runtimes[index].charts_at = charts_at;
-                                        outcomes.push(ProjectOutcome {
+                                        ProjectOutcome {
                                             order: index,
                                             result,
-                                        });
+                                        }
                                     }
-                                    Err(err) => outcomes.push(ProjectOutcome {
+                                    Err(err) => ProjectOutcome {
                                         order: usize::MAX,
                                         result: Err(Failure::local(format!(
                                             "worker task failed: {err}"
                                         ))),
-                                    }),
+                                    },
+                                };
+                                if response_tx.send(Response::Project(outcome)).is_err() {
+                                    break;
                                 }
                             }
-                            outcomes.sort_by_key(|outcome| outcome.order);
-                            if response_tx
-                                .send(Response::Batch { outcomes, full })
-                                .is_err()
-                            {
+                            if response_tx.send(Response::Done { full }).is_err() {
                                 break;
                             }
                         }
@@ -544,14 +540,25 @@ async fn fetch_source(
         Ok(overview) => overview,
         Err(failure) => return (Err(failure), cache, charts_at),
     };
-    let due = force_charts || charts_at.is_none_or(|then| then.elapsed() >= chart_ttl);
+    cache.retain(|id, _| overview.metrics.iter().any(|metric| metric.id == *id));
+    let missing_chart = overview.metrics.iter().any(|metric| {
+        api::chart_for_metric(&metric.id, &metric.name).is_some() && !cache.contains_key(&metric.id)
+    });
+    let due =
+        force_charts || missing_chart || charts_at.is_none_or(|then| then.elapsed() >= chart_ttl);
     let mut charts_at = charts_at;
     if due {
         let fresh = client.fetch_charts(&overview.metrics).await;
+        let complete = overview.metrics.iter().all(|metric| {
+            api::chart_for_metric(&metric.id, &metric.name).is_none()
+                || fresh.contains_key(&metric.id)
+        });
         for (id, values) in fresh {
             cache.insert(id, values);
         }
-        charts_at = Some(Instant::now());
+        if complete {
+            charts_at = Some(Instant::now());
+        }
     }
     let series = overview
         .metrics
@@ -666,6 +673,9 @@ pub struct App {
     frame_delta: FxDuration,
     intro_done: bool,
     consecutive_failures: u32,
+    fetch_success: bool,
+    fetch_failure: Option<Failure>,
+    fetch_failures: usize,
     confirm_remove: Option<usize>,
     focus_until: Instant,
     animating_until: Instant,
@@ -723,6 +733,9 @@ impl App {
             frame_delta: FxDuration::from_millis(16),
             intro_done: false,
             consecutive_failures: 0,
+            fetch_success: false,
+            fetch_failure: None,
+            fetch_failures: 0,
             confirm_remove: None,
             focus_until: now,
             animating_until: now,
@@ -735,15 +748,27 @@ impl App {
         self.last_frame = now;
         self.frame_delta = FxDuration::from_millis(delta.as_millis().min(250) as u32);
 
+        let mut apply_cards = false;
         for response in self.worker.drain() {
             match response {
-                Response::Batch { outcomes, full } => self.ingest(outcomes, full, now),
+                Response::Project(outcome) => {
+                    let order = outcome.order;
+                    let updated = self.ingest_project(outcome, now);
+                    if updated && (self.scope == 0 || self.scope == order + 1) {
+                        apply_cards = true;
+                    }
+                }
+                Response::Done { full } => self.finish_fetch(full, now),
                 Response::Range {
                     metric_id,
                     days,
                     result,
                 } => self.ingest_range(&metric_id, days, result),
             }
+        }
+        if apply_cards {
+            self.apply_active(true);
+            self.normalize_page();
         }
 
         if now >= self.next_refresh && !matches!(self.status, Status::Fetching) {
@@ -777,6 +802,9 @@ impl App {
     }
 
     fn dispatch(&mut self, only: Option<usize>, force_charts: bool) {
+        self.fetch_success = false;
+        self.fetch_failure = None;
+        self.fetch_failures = 0;
         self.worker.send(Command::Fetch { only, force_charts });
         self.status = Status::Fetching;
         self.animating_until = Instant::now() + Duration::from_secs(1);
@@ -1168,66 +1196,93 @@ impl App {
         }
     }
 
-    fn ingest(&mut self, outcomes: Vec<ProjectOutcome>, full: bool, now: Instant) {
-        if outcomes.is_empty() {
-            return;
-        }
-        let mut any_success = false;
-        let mut any_failure = false;
-        let mut first_failure = None;
-        for outcome in outcomes {
-            if outcome.order >= self.views.len() {
-                continue;
+    fn ingest_project(&mut self, outcome: ProjectOutcome, now: Instant) -> bool {
+        if outcome.order >= self.views.len() {
+            self.fetch_failures += 1;
+            if let Err(failure) = outcome.result {
+                self.fetch_failure.get_or_insert(failure);
             }
-            let view = &mut self.views[outcome.order];
-            match outcome.result {
-                Ok(snapshot) => {
-                    view.snapshot = Some(snapshot);
-                    view.failure = None;
-                    view.last_success = Some(now);
-                    any_success = true;
-                }
-                Err(failure) => {
-                    view.failure = Some(failure.clone());
-                    any_failure = true;
-                    first_failure.get_or_insert(failure);
-                }
+            return false;
+        }
+        match outcome.result {
+            Ok(snapshot) => {
+                let view = &mut self.views[outcome.order];
+                view.snapshot = Some(snapshot);
+                view.failure = None;
+                view.last_success = Some(now);
+                self.fetch_success = true;
+                self.last_updated = Some(now);
+                self.animating_until = now + Duration::from_secs(2);
+                true
+            }
+            Err(failure) => {
+                self.views[outcome.order].failure = Some(failure.clone());
+                self.fetch_failures += 1;
+                self.fetch_failure.get_or_insert(failure);
+                false
             }
         }
+    }
 
-        if any_success {
-            self.last_updated = Some(now);
-        }
-        if let Some(first) = first_failure.clone()
-            && !self.has_data()
-        {
-            self.status = Status::Error(first);
-        } else {
+    fn finish_fetch(&mut self, full: bool, now: Instant) {
+        let failure = self.fetch_failure.clone();
+        if self.fetch_success {
             self.status = Status::Idle;
-        }
-
-        if full {
-            if any_success {
+            self.consecutive_failures = 0;
+            if full {
                 self.last_refresh = Some(now);
-                self.consecutive_failures = 0;
                 self.next_refresh = now + self.interval;
-            } else if any_failure {
+            }
+        } else if self.fetch_failures > 0 {
+            self.status = if self.has_data() {
+                Status::Idle
+            } else {
+                Status::Error(
+                    failure
+                        .clone()
+                        .unwrap_or_else(|| Failure::local("refresh failed")),
+                )
+            };
+            if full {
                 self.consecutive_failures = self.consecutive_failures.saturating_add(1);
                 let backoff = Duration::from_secs(60)
                     .saturating_mul(1u32 << (self.consecutive_failures - 1).min(4));
-                let wait = first_failure
+                let wait = failure
                     .and_then(|failure| failure.retry_after)
                     .unwrap_or(backoff)
                     .min(self.interval);
                 self.next_refresh = now + wait;
             }
+        } else {
+            self.status = Status::Idle;
+            if full {
+                self.next_refresh = now + self.interval;
+            }
         }
 
         self.animating_until = now + Duration::from_secs(2);
-        if self.has_data() {
+        self.fetch_success = false;
+        self.fetch_failure = None;
+        self.fetch_failures = 0;
+        self.normalize_page();
+    }
+
+    #[cfg(test)]
+    fn ingest(&mut self, outcomes: Vec<ProjectOutcome>, full: bool, now: Instant) {
+        self.fetch_success = false;
+        self.fetch_failure = None;
+        self.fetch_failures = 0;
+        let mut apply_cards = false;
+        for outcome in outcomes {
+            let order = outcome.order;
+            if self.ingest_project(outcome, now) && (self.scope == 0 || self.scope == order + 1) {
+                apply_cards = true;
+            }
+        }
+        if apply_cards {
             self.apply_active(true);
         }
-        self.normalize_page();
+        self.finish_fetch(full, now);
     }
 
     fn ingest_range(&mut self, metric_id: &str, days: u64, result: Result<Vec<f64>, Failure>) {

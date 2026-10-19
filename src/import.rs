@@ -179,7 +179,12 @@ impl Import {
     }
 }
 
-pub fn validate(entries: Vec<Entry>, base_url: &str, currency: &str) -> Vec<Outcome> {
+pub fn validate(
+    entries: Vec<Entry>,
+    base_url: &str,
+    currency: &str,
+    http: &reqwest::Client,
+) -> Vec<Outcome> {
     let runtime = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -204,7 +209,8 @@ pub fn validate(entries: Vec<Entry>, base_url: &str, currency: &str) -> Vec<Outc
         for entry in entries {
             let base_url = base_url.to_string();
             let currency = currency.to_string();
-            set.spawn(async move { resolve(entry, &base_url, &currency).await });
+            let http = http.clone();
+            set.spawn(async move { resolve(entry, &base_url, &currency, http).await });
         }
         let mut outcomes = Vec::new();
         while let Some(joined) = set.join_next().await {
@@ -224,18 +230,16 @@ pub fn validate(entries: Vec<Entry>, base_url: &str, currency: &str) -> Vec<Outc
     })
 }
 
-async fn resolve(entry: Entry, base_url: &str, currency: &str) -> Outcome {
+async fn resolve(entry: Entry, base_url: &str, currency: &str, http: reqwest::Client) -> Outcome {
     let fallback = redacted_tail(&entry.api_key);
     let mut project_id = entry.project_id.clone().unwrap_or_default();
     let mut name = None;
 
     if project_id.is_empty() {
-        let client = Client::new(Settings::new(
-            base_url,
-            entry.api_key.clone(),
-            String::new(),
-            currency,
-        ));
+        let client = Client::with_http(
+            Settings::new(base_url, entry.api_key.clone(), String::new(), currency),
+            http.clone(),
+        );
         match client.list_projects().await {
             Ok(projects) => match projects.into_iter().next() {
                 Some(project) => {
@@ -266,12 +270,15 @@ async fn resolve(entry: Entry, base_url: &str, currency: &str) -> Outcome {
         }
     }
 
-    let client = Client::new(Settings::new(
-        base_url,
-        entry.api_key.clone(),
-        project_id.clone(),
-        currency,
-    ));
+    let client = Client::with_http(
+        Settings::new(
+            base_url,
+            entry.api_key.clone(),
+            project_id.clone(),
+            currency,
+        ),
+        http,
+    );
     let report = client.check_scopes().await;
     let label = name.clone().unwrap_or_else(|| project_id.clone());
     if let Err(failure) = report.overview {

@@ -3,8 +3,10 @@ use std::time::Duration;
 
 use chrono::{Days, Utc};
 use serde::Deserialize;
+use tokio::task::JoinSet;
 
 const CHART_WINDOW_DAYS: u64 = 28;
+const CHART_TIMEOUT: Duration = Duration::from_secs(6);
 
 pub const DOCS_API_KEYS: &str = "https://www.revenuecat.com/docs/projects/authentication";
 
@@ -217,11 +219,13 @@ pub struct Client {
 
 impl Client {
     pub fn new(settings: Settings) -> Self {
-        let http = reqwest::Client::builder()
-            .timeout(Duration::from_secs(30))
-            .user_agent(concat!("rc-tui/", env!("CARGO_PKG_VERSION")))
-            .build()
-            .unwrap_or_default();
+        Self {
+            http: http_client(),
+            settings,
+        }
+    }
+
+    pub(crate) fn with_http(settings: Settings, http: reqwest::Client) -> Self {
         Self { http, settings }
     }
 
@@ -258,17 +262,43 @@ impl Client {
     }
 
     pub async fn fetch_charts(&self, metrics: &[OverviewMetric]) -> HashMap<String, Vec<f64>> {
-        let mut series = HashMap::new();
+        let mut jobs: HashMap<(String, bool), Vec<String>> = HashMap::new();
         for metric in metrics {
             let Some(chart) = chart_for_metric(&metric.id, &metric.name) else {
                 continue;
             };
             let monetary =
                 metric.unit == "$" || metric.unit.eq_ignore_ascii_case(&self.settings.currency);
-            if let Ok(values) = self.chart(chart, monetary, CHART_WINDOW_DAYS).await
+            jobs.entry((chart.to_string(), monetary))
+                .or_default()
+                .push(metric.id.clone());
+        }
+
+        let mut set = JoinSet::new();
+        for ((chart, monetary), metric_ids) in jobs {
+            let client = self.clone();
+            set.spawn(async move {
+                let result = match tokio::time::timeout(
+                    CHART_TIMEOUT,
+                    client.chart(&chart, monetary, CHART_WINDOW_DAYS),
+                )
+                .await
+                {
+                    Ok(result) => result,
+                    Err(_) => Err(Failure::local("chart request timed out")),
+                };
+                (metric_ids, result)
+            });
+        }
+
+        let mut series = HashMap::new();
+        while let Some(joined) = set.join_next().await {
+            if let Ok((metric_ids, Ok(values))) = joined
                 && !values.is_empty()
             {
-                series.insert(metric.id.clone(), values);
+                for metric_id in metric_ids {
+                    series.insert(metric_id, values.clone());
+                }
             }
         }
         series
@@ -393,6 +423,17 @@ impl Client {
         }
         Ok(body)
     }
+}
+
+pub(crate) fn http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .user_agent(concat!("rc-tui/", env!("CARGO_PKG_VERSION")))
+        .pool_idle_timeout(Duration::from_secs(600))
+        .pool_max_idle_per_host(32)
+        .tcp_keepalive(Duration::from_secs(60))
+        .build()
+        .unwrap_or_default()
 }
 
 fn path_of(url: &str) -> String {

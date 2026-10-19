@@ -13,12 +13,22 @@ use std::time::Duration;
 use clap::Parser;
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{self, Event, KeyEventKind};
+use tokio::task::JoinSet;
 
 use crate::api::{Client, Failure, Project, Settings};
 use crate::app::{App, AppOptions, Intent, Motion, Source};
 use crate::config::{Config, ProjectConfig};
 use crate::import::{Action as ImportAction, Import};
 use crate::setup::{Action, Setup};
+
+struct CheckOutcome {
+    order: usize,
+    label: String,
+    id: String,
+    key: String,
+    overview: Result<api::Overview, Failure>,
+    charts: Result<Vec<f64>, Failure>,
+}
 
 #[derive(Parser)]
 #[command(version, about = "RevenueCat overview in the terminal")]
@@ -149,9 +159,10 @@ fn main() -> color_eyre::Result<ExitCode> {
     loop {
         let saved = Config::load();
         let currency = resolve_currency(args.currency.as_deref(), saved.currency.as_deref());
+        let http = api::http_client();
         let sources = projects
             .iter()
-            .map(|project| source_for(project, &args.base_url, &currency))
+            .map(|project| source_for(project, &args.base_url, &currency, &http))
             .collect::<Vec<_>>();
         let mut app = build_app(sources, &saved, &currency, &args);
         if let Some(id) = &scope_id {
@@ -274,14 +285,23 @@ fn persist(added: Vec<ProjectConfig>, currency: &str) -> Vec<ProjectConfig> {
     config.projects
 }
 
-fn source_for(project: &ProjectConfig, base_url: &str, currency: &str) -> Source {
+fn source_for(
+    project: &ProjectConfig,
+    base_url: &str,
+    currency: &str,
+    http: &reqwest::Client,
+) -> Source {
     let settings = Settings::new(
         base_url,
         project.api_key.clone(),
         project.id.clone(),
         currency,
     );
-    Source::live(project.label(), project.id.clone(), Client::new(settings))
+    Source::live(
+        project.label(),
+        project.id.clone(),
+        Client::with_http(settings, http.clone()),
+    )
 }
 
 fn run_dashboard(mut app: App) -> color_eyre::Result<ExitCode> {
@@ -344,7 +364,8 @@ fn run_setup(
 fn run_import(base_url: &str, currency: &str) -> color_eyre::Result<Vec<ProjectConfig>> {
     let mut terminal = ratatui::try_init()?;
     let mut state = Import::new();
-    let projects = import_loop(&mut terminal, &mut state, base_url, currency);
+    let http = api::http_client();
+    let projects = import_loop(&mut terminal, &mut state, base_url, currency, &http);
     ratatui::restore();
     projects
 }
@@ -354,6 +375,7 @@ fn import_loop(
     state: &mut Import,
     base_url: &str,
     currency: &str,
+    http: &reqwest::Client,
 ) -> color_eyre::Result<Vec<ProjectConfig>> {
     loop {
         terminal.draw(|frame| ui::draw_import(state, frame))?;
@@ -367,7 +389,7 @@ fn import_loop(
                 ImportAction::Save => return Ok(state.valid_projects()),
                 ImportAction::Validate(entries) => {
                     terminal.draw(|frame| ui::draw_import(state, frame))?;
-                    let outcomes = import::validate(entries, base_url, currency);
+                    let outcomes = import::validate(entries, base_url, currency, http);
                     state.finish(outcomes);
                 }
             },
@@ -431,26 +453,70 @@ fn run_check(args: &Args) -> color_eyre::Result<ExitCode> {
         return Ok(ExitCode::FAILURE);
     }
 
+    println!("Checking {} project(s) in parallel…\n", projects.len());
     let runtime = runtime()?;
+    let http = api::http_client();
+    let mut outcomes = runtime.block_on(async {
+        let mut set = JoinSet::new();
+        for (order, project) in projects.iter().cloned().enumerate() {
+            let base_url = args.base_url.clone();
+            let currency = currency.clone();
+            let http = http.clone();
+            set.spawn(async move {
+                let client = Client::with_http(
+                    Settings::new(
+                        base_url,
+                        project.api_key.clone(),
+                        project.id.clone(),
+                        &currency,
+                    ),
+                    http,
+                );
+                let key = client.settings().redacted_key();
+                let label = project.label().to_string();
+                let id = project.id;
+                let overview = client.fetch_overview().await;
+                let charts = client.fetch_range("trials", 7, false).await;
+                CheckOutcome {
+                    order,
+                    label,
+                    id,
+                    key,
+                    overview,
+                    charts,
+                }
+            });
+        }
+        let mut outcomes = Vec::new();
+        while let Some(joined) = set.join_next().await {
+            match joined {
+                Ok(outcome) => outcomes.push(outcome),
+                Err(err) => {
+                    let failure = Failure::local(format!("task failed: {err}"));
+                    outcomes.push(CheckOutcome {
+                        order: usize::MAX,
+                        label: "worker".to_string(),
+                        id: String::new(),
+                        key: String::new(),
+                        overview: Err(failure.clone()),
+                        charts: Err(failure),
+                    });
+                }
+            }
+        }
+        outcomes.sort_by_key(|outcome| outcome.order);
+        outcomes
+    });
+
     let mut failures = 0;
-    for project in &projects {
-        let client = Client::new(Settings::new(
-            args.base_url.clone(),
-            project.api_key.clone(),
-            project.id.clone(),
-            &currency,
-        ));
+    for outcome in outcomes.drain(..) {
         println!(
             "Checking {} ({}) with key {} …",
-            project.label(),
-            project.id,
-            client.settings().redacted_key()
+            outcome.label, outcome.id, outcome.key
         );
-        let overview = runtime.block_on(client.fetch_overview());
-        let charts = runtime.block_on(client.fetch_range("trials", 7, false));
         let mut ok = true;
         let mut printed = false;
-        match &overview {
+        match &outcome.overview {
             Ok(overview) => {
                 println!("  metrics ✓ {} metrics", overview.metrics.len());
                 for metric in &overview.metrics {
@@ -468,7 +534,7 @@ fn run_check(args: &Args) -> color_eyre::Result<ExitCode> {
                 print_failure_detail(failure);
             }
         }
-        match &charts {
+        match &outcome.charts {
             Ok(_) => println!("  charts  ✓"),
             Err(failure) => {
                 ok = false;
