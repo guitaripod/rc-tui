@@ -632,6 +632,8 @@ pub struct AppOptions {
     pub motion: Motion,
     pub wall: bool,
     pub pins: Vec<String>,
+    pub ui_scale: u8,
+    pub ui_page: usize,
 }
 
 pub struct App {
@@ -657,6 +659,8 @@ pub struct App {
     pub notice: Option<(String, Instant)>,
     pub pins: Vec<String>,
     pub motion: Motion,
+    pub ui_scale: u8,
+    pub page: usize,
     worker: Worker,
     last_frame: Instant,
     frame_delta: FxDuration,
@@ -712,6 +716,8 @@ impl App {
             notice: None,
             pins: options.pins,
             motion: options.motion,
+            ui_scale: options.ui_scale.min(3),
+            page: options.ui_page,
             worker,
             last_frame: now,
             frame_delta: FxDuration::from_millis(16),
@@ -781,6 +787,105 @@ impl App {
 
     pub fn project_count(&self) -> usize {
         self.views.len()
+    }
+
+    pub fn per_page(&self) -> usize {
+        match self.ui_scale {
+            1 => 3,
+            2 => 2,
+            3 => 1,
+            _ => 0,
+        }
+    }
+
+    pub fn page_count(&self) -> usize {
+        let per_page = self.per_page();
+        if per_page == 0 || self.cards.is_empty() {
+            1
+        } else {
+            self.cards.len().div_ceil(per_page)
+        }
+    }
+
+    pub fn visible_indices(&self) -> Vec<usize> {
+        let per_page = self.per_page();
+        if per_page == 0 {
+            return (0..self.cards.len()).collect();
+        }
+        if self.cards.is_empty() {
+            return Vec::new();
+        }
+        let page = self.page.min(self.page_count().saturating_sub(1));
+        let start = page * per_page;
+        (start..(start + per_page).min(self.cards.len())).collect()
+    }
+
+    fn normalize_page(&mut self) {
+        let page_count = self.page_count().max(1);
+        self.page = self.page.min(page_count.saturating_sub(1));
+        let visible = self.visible_indices();
+        if let Some(first) = visible.first() {
+            if !visible.contains(&self.focus) {
+                self.focus = *first;
+            }
+        } else {
+            self.focus = 0;
+        }
+    }
+
+    fn set_ui_scale(&mut self, scale: u8) {
+        let scale = scale.min(3);
+        if scale == self.ui_scale {
+            return;
+        }
+        self.ui_scale = scale;
+        self.page = 0;
+        self.normalize_page();
+        let saved = self.save_ui_prefs().is_ok();
+        let label = if scale == 0 {
+            "auto".to_string()
+        } else {
+            format!("{} per page", self.per_page())
+        };
+        let suffix = if self.demo {
+            String::new()
+        } else if saved {
+            " (saved)".to_string()
+        } else {
+            " (not saved)".to_string()
+        };
+        self.notice = Some((format!("ui scale {label}{suffix}"), Instant::now()));
+    }
+
+    fn change_page(&mut self, delta: isize) {
+        let pages = self.page_count();
+        if pages <= 1 {
+            return;
+        }
+        self.page = (self.page as isize + delta).rem_euclid(pages as isize) as usize;
+        self.normalize_page();
+        let saved = self.save_ui_prefs().is_ok();
+        let suffix = if self.demo {
+            String::new()
+        } else if saved {
+            " (saved)".to_string()
+        } else {
+            " (not saved)".to_string()
+        };
+        self.notice = Some((
+            format!("page {}/{}{suffix}", self.page + 1, pages),
+            Instant::now(),
+        ));
+    }
+
+    fn save_ui_prefs(&self) -> Result<(), String> {
+        if self.demo {
+            return Ok(());
+        }
+        let mut config = config::Config::load();
+        config.ui_scale = Some(self.ui_scale);
+        config.ui_page = Some(self.page);
+        config.save().map(|_| ()).map_err(|err| err.to_string())
     }
 
     pub fn live_count(&self) -> usize {
@@ -1122,6 +1227,7 @@ impl App {
         if self.has_data() {
             self.apply_active(true);
         }
+        self.normalize_page();
     }
 
     fn ingest_range(&mut self, metric_id: &str, days: u64, result: Result<Vec<f64>, Failure>) {
@@ -1259,6 +1365,22 @@ impl App {
                 self.toggle_wall();
                 Intent::None
             }
+            KeyCode::Char('+') | KeyCode::Char('=') => {
+                self.set_ui_scale(self.ui_scale.saturating_add(1));
+                Intent::None
+            }
+            KeyCode::Char('-') | KeyCode::Char('_') => {
+                self.set_ui_scale(self.ui_scale.saturating_sub(1));
+                Intent::None
+            }
+            KeyCode::Char('[') => {
+                self.change_page(-1);
+                Intent::None
+            }
+            KeyCode::Char(']') => {
+                self.change_page(1);
+                Intent::None
+            }
             KeyCode::Char('x') => {
                 let _ = self.export_csv();
                 Intent::None
@@ -1283,10 +1405,16 @@ impl App {
     }
 
     fn move_focus(&mut self, delta: isize) {
-        if self.cards.is_empty() {
+        let visible = self.visible_indices();
+        if visible.is_empty() {
             return;
         }
-        self.focus = (self.focus as isize + delta).rem_euclid(self.cards.len() as isize) as usize;
+        let position = visible
+            .iter()
+            .position(|index| *index == self.focus)
+            .unwrap_or(0);
+        let next = (position as isize + delta).rem_euclid(visible.len() as isize) as usize;
+        self.focus = visible[next];
     }
 
     fn picker_key(&mut self, key: KeyEvent) -> Intent {
@@ -1445,6 +1573,7 @@ impl App {
         match key.code {
             KeyCode::Esc => {
                 self.detail = None;
+                self.normalize_page();
             }
             KeyCode::Char('q') => return Intent::Quit,
             KeyCode::Char('r') => self.refresh_now(),
@@ -1489,7 +1618,7 @@ impl App {
         if self.cards.is_empty() {
             return;
         }
-        self.move_focus(delta);
+        self.focus = (self.focus as isize + delta).rem_euclid(self.cards.len() as isize) as usize;
         let metric_id = self.cards[self.focus].id.clone();
         let window = self
             .detail
@@ -1611,6 +1740,8 @@ mod tests {
             motion: Motion::Full,
             wall: false,
             pins: Vec::new(),
+            ui_scale: 0,
+            ui_page: 0,
         }
     }
 
@@ -1747,6 +1878,33 @@ mod tests {
         for pair in rows.windows(2) {
             assert!(pair[0].value >= pair[1].value);
         }
+    }
+
+    #[test]
+    fn ui_scale_pages_cards_without_losing_focus() {
+        let mut app = demo_app();
+        wait_for_data(&mut app);
+
+        app.set_ui_scale(1);
+        assert_eq!(app.per_page(), 3);
+        assert_eq!(app.page_count(), 2);
+        assert_eq!(app.visible_indices(), vec![0, 1, 2]);
+        assert_eq!(app.focus, 0);
+
+        app.move_focus(1);
+        assert_eq!(app.focus, 1);
+        app.change_page(1);
+        assert_eq!(app.visible_indices(), vec![3, 4, 5]);
+        assert_eq!(app.focus, 3);
+
+        app.set_ui_scale(2);
+        assert_eq!(app.page_count(), 3);
+        assert_eq!(app.visible_indices(), vec![0, 1]);
+        app.set_ui_scale(3);
+        assert_eq!(app.page_count(), 6);
+        assert_eq!(app.visible_indices(), vec![0]);
+        app.set_ui_scale(0);
+        assert_eq!(app.visible_indices().len(), 6);
     }
 
     #[test]

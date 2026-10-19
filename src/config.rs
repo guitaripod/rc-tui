@@ -25,6 +25,15 @@ pub struct Config {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pins: Vec<String>,
 
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ui_scale: Option<u8>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ui_page: Option<usize>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_project: Option<String>,
+
     #[serde(default)]
     pub projects: Vec<ProjectConfig>,
 
@@ -226,6 +235,15 @@ mod tests {
         assert_eq!(config.motion.as_deref(), Some("minimal"));
         assert_eq!(config.wall, Some(true));
         assert_eq!(config.pins, vec!["proj2".to_string()]);
+    }
+
+    #[test]
+    fn parses_persisted_ui_state() {
+        let config =
+            Config::parse("ui_scale = 2\nui_page = 1\nlast_project = \"proj2\"\n").unwrap();
+        assert_eq!(config.ui_scale, Some(2));
+        assert_eq!(config.ui_page, Some(1));
+        assert_eq!(config.last_project.as_deref(), Some("proj2"));
     }
 
     #[test]

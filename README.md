@@ -40,13 +40,15 @@ rc-tui --check    # validate every saved project: metrics and charts
 ```text
 dashboard   q quit · r refresh · p projects · Enter detail · ! health · ? help
             w wall · x export CSV · a add · i import · s setup · ←→↑↓/Tab focus
+            + - UI scale · [ ] page
 picker      type to filter · ↑↓ · Enter open · Esc close
             Ctrl+F pin · Ctrl+E edit · Ctrl+D remove (twice)
 detail      Esc back · ↑↓ metric · t 7/28/90 days · j/k project · Enter scope
 ```
 
-`w` and pins persist in the config. `x` writes a CSV to
-`~/.local/share/rc-tui/exports/`.
+`+`/`-` cycles the UI scale (auto, 3, 2 or 1 cards per page); `[`/`]` changes
+page. Scale, page, wall, pins and the last project persist in the config. `x`
+writes a CSV to `~/.local/share/rc-tui/exports/`.
 
 ## Config
 
@@ -60,8 +62,8 @@ api_key = "sk_..."
 name = "MagicWeather"
 ```
 
-Optional keys: `motion = "full" | "minimal" | "off"`, `wall = true`,
-`pins = ["proj..."]`.
+Optional keys: `ui_scale = 0..3` (0 auto, 1 = 3/page, 2 = 2/page, 3 = 1/page),
+`motion = "full" | "minimal" | "off"`, `wall = true`, `pins = ["proj..."]`.
 
 ## Data
 

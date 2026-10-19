@@ -95,6 +95,12 @@ fn draw_header(app: &App, frame: &mut Frame, area: Rect, now: Instant) {
         format!("    {}", app.currency),
         Style::new().fg(DIM),
     ));
+    if app.ui_scale > 0 {
+        spans.push(Span::styled(
+            format!("    {} / page", app.per_page()),
+            Style::new().fg(DIM),
+        ));
+    }
     if app.demo {
         spans.push(Span::styled("    demo", Style::new().fg(WARN)));
     }
@@ -121,7 +127,13 @@ fn draw_header(app: &App, frame: &mut Frame, area: Rect, now: Instant) {
     } else {
         ("live".to_string(), GOOD)
     };
+    let page = if app.ui_scale > 0 {
+        format!("{}/{}   ·   ", app.page + 1, app.page_count())
+    } else {
+        String::new()
+    };
     let line = Line::from(vec![
+        Span::styled(page, Style::new().fg(DIM)),
         Span::styled(
             format!("{}    ", chrono::Local::now().format("%H:%M")),
             Style::new().fg(DIM),
@@ -181,8 +193,26 @@ fn draw_body(app: &mut App, frame: &mut Frame, area: Rect, now: Instant) {
     ])
     .areas(grid);
 
-    let columns = column_count(grid.width, grid.height, app.cards.len());
-    let rows = app.cards.len().div_ceil(columns);
+    let visible = app.visible_indices();
+    let columns = match app.ui_scale {
+        1 => {
+            if grid.width >= 90 {
+                3
+            } else {
+                1
+            }
+        }
+        2 => {
+            if grid.width >= 70 {
+                2
+            } else {
+                1
+            }
+        }
+        3 => 1,
+        _ => column_count(grid.width, grid.height, visible.len()),
+    };
+    let rows = visible.len().div_ceil(columns.max(1));
     if rows == 0 || grid.height == 0 {
         return;
     }
@@ -198,16 +228,19 @@ fn draw_body(app: &mut App, frame: &mut Frame, area: Rect, now: Instant) {
         .and_then(|index| app.views.get(index))
         .map(|view| view.state(now, app.stale_after()));
     let focus_visible = app.focus_visible(now);
-    for (index, card) in app.cards.iter().enumerate() {
-        let row = index / columns;
-        let column = index % columns;
+    app.rects.clear();
+    for (position, index) in visible.iter().copied().enumerate() {
+        let row = position / columns;
+        let column = position % columns;
         if row >= row_areas.len() {
             break;
         }
         let cells = Layout::horizontal(vec![Constraint::Fill(1); columns])
             .spacing(1)
             .split(row_areas[row]);
-        if let Some(cell) = cells.get(column) {
+        if let Some(cell) = cells.get(column)
+            && let Some(card) = app.cards.get(index)
+        {
             draw_card(
                 frame,
                 card,
@@ -1118,6 +1151,8 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         key_line("w", "wall mode (no chrome)"),
         key_line("x", "export the current scope as CSV"),
         key_line("?", "this help"),
+        key_line("+ / -", "UI scale: auto, 3, 2 or 1 cards per page"),
+        key_line("[ / ]", "previous / next page"),
         Line::default(),
         dim_line("  Detail"),
         key_line("Esc", "back"),
@@ -1128,6 +1163,7 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         Line::default(),
         dim_line("  Cards: RevenueCat overview values. Sparklines: 28 daily points."),
         dim_line("  Trends: last 7 days vs the previous 7. * marks a partial total."),
+        dim_line("  UI scale, page, wall, pins and the last project persist in config.toml."),
     ];
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
 }
@@ -1886,6 +1922,8 @@ mod tests {
             motion: crate::app::Motion::Full,
             wall: false,
             pins: Vec::new(),
+            ui_scale: 0,
+            ui_page: 0,
         });
         let deadline = Instant::now() + Duration::from_secs(5);
         while app.cards.is_empty() && Instant::now() < deadline {

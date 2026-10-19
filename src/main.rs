@@ -145,7 +145,7 @@ fn main() -> color_eyre::Result<ExitCode> {
         projects = persist(added, &chosen_currency);
     }
 
-    let mut scope_id: Option<String> = None;
+    let mut scope_id: Option<String> = saved.last_project.clone();
     loop {
         let saved = Config::load();
         let currency = resolve_currency(args.currency.as_deref(), saved.currency.as_deref());
@@ -160,7 +160,12 @@ fn main() -> color_eyre::Result<ExitCode> {
         let control = run_dashboard_once(&mut app)?;
         scope_id = app.scope_id().map(str::to_string);
         match control {
-            Control::Quit => return Ok(ExitCode::SUCCESS),
+            Control::Quit => {
+                if !app.demo {
+                    save_last_scope(scope_id.as_deref());
+                }
+                return Ok(ExitCode::SUCCESS);
+            }
             Control::Import => {
                 if !std::io::stdin().is_terminal() {
                     return Ok(ExitCode::FAILURE);
@@ -236,7 +241,17 @@ fn build_app(sources: Vec<Source>, config: &Config, currency: &str, args: &Args)
         motion: Motion::parse(config.motion.as_deref()),
         wall: config.wall.unwrap_or(false),
         pins: config.pins.clone(),
+        ui_scale: config.ui_scale.unwrap_or(0).min(3),
+        ui_page: config.ui_page.unwrap_or(0),
     })
+}
+
+fn save_last_scope(scope: Option<&str>) {
+    let mut config = Config::load();
+    config.last_project = scope.map(str::to_string);
+    if let Err(err) = config.save() {
+        eprintln!("rc-tui: could not save the last project: {err}");
+    }
 }
 
 fn persist(added: Vec<ProjectConfig>, currency: &str) -> Vec<ProjectConfig> {
