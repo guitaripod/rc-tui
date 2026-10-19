@@ -9,9 +9,9 @@ metrics the dashboard sums, and `p` opens a filterable project picker. Enter on 
 card opens a 7/28/90-day detail view with a per-project breakdown; `!` shows the
 health of every project, and `?` lists every key.
 
-![rc-tui demo](docs/rc-tui-demo.png)
+[![rc-tui demo](docs/rc-tui-demo.png)](docs/rc-tui-demo.png)
 
-*`rc-tui --demo` — 17 mocked projects, no credentials.*
+*`rc-tui --demo` — 17 mocked projects, no credentials. Click for full size.*
 
 Values are the hero (big block digits), the trend compares the last week with the
 one before, and the footer keeps only the refresh status once you stop pressing
