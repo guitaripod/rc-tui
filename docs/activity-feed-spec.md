@@ -3,7 +3,9 @@
 Status: **design complete, ready for implementation**
 Scope: the main rc-tui dashboard plus a read-only activity producer in storebot.
 
-![Activity shelf mockup](activity-feed-main.png)
+![Activity pulse rail mockup](activity-feed-main.png)
+
+Layout exploration: [`activity-feed-iterations.md`](activity-feed-iterations.md).
 
 ## 1. Vision
 
@@ -22,13 +24,14 @@ the product, the country and the source.
 ### Design principles
 
 1. **Protect the hero.** The six metric cards remain the first thing the eye
-   lands on. Activity is a shelf below them, not a competing sidebar.
+   lands on. Activity lives beside or below them, never on top and never at the
+   cost of a card's numbers.
 2. **Calm by default.** No blinking, no permanent animation, no badge noise.
    Motion exists only to acknowledge an arrival.
 3. **One event, one identity.** A sale or review is shown exactly once. The UI
    and the Telegram bot share the same deduplicated event identity.
-4. **Progressive disclosure.** The shelf gives time, kind, app, product and
-   amount. The full view gives the review body, source and metadata.
+4. **Progressive disclosure.** The rail or shelf gives time, kind, app, product
+   and amount. The full view gives the review body, source and metadata.
 5. **Local and private.** rc-tui reads a local, mode-600 feed written by
    storebot. No Telegram token, no additional App Store or RevenueCat calls.
 6. **Legible in a terminal.** No emoji in event rows. Country codes, stars and
@@ -304,51 +307,109 @@ live dot.
 
 ## 4. Main dashboard layout
 
-### 4.1 Structure
+The layout was iterated three times. The full exploration and critique is in
+[`activity-feed-iterations.md`](activity-feed-iterations.md); this section
+specifies the chosen third pass.
+
+### 4.1 Adaptive layout
 
 ```text
-┌ header ────────────────────────────────────────────────────────────────┐
-├ rule ──────────────────────────────────────────────────────────────────┤
-│                                                                        │
-│  metric card grid                                                      │
-│                                                                        │
-├────────────────────────────────────────────────────────────────────────┤
-│ ACTIVITY  ● 3 NEW                           storebot 12s   f FULL FEED │
-│ TODAY                                                                  │
-│ 02:08  +  Tailscode · Pro Monthly                    +$14.99   US      │
-│ 01:42  ★  Solar Beam · “Finally an app that…”       ★★★★★   FI      │
-│ ...                                                                    │
-├ footer ────────────────────────────────────────────────────────────────┤
-└────────────────────────────────────────────────────────────────────────┘
+┌ header ───────────────────────────────────────────────────────────────────────┐
+├ rule ─────────────────────────────────────────────────────────────────────────┤
+│                                                                               │
+│  six metric cards (3 x 2)                            │  ACTIVITY  ● 3 NEW  f  │
+│                                                       │  PULSE 24H   24 events │
+│                                                       │  ▂▃▅▂▇▃▁▂▄▆...        │
+│                                                       │  ATTENTION · 1         │
+│                                                       │  ★★☆☆☆ Dream Eater      │
+│                                                       │  “Needs one more…”     │
+│                                                       │  GB · written · 2h     │
+│                                                       │  LIVE 3 NEW            │
+│                                                       │  02:08 + Tailscode     │
+│                                                       │  01:42 ★ Solar Beam    │
+│                                                       │  “Finally an app…”     │
+│                                                       │  ...                   │
+├ footer ────────────────────────────────────────────────────────────────────────┤
+└───────────────────────────────────────────────────────────────────────────────┘
 ```
 
-- The shelf is a **full-width band inside the body**, below the cards.
-- It uses a top rule and `SURFACE` background; no nested bordered card. This
-  keeps the six metric cards as the only bordered objects on the screen.
-- The metric grid is untouched: same cards, same column logic, same charts.
-- The shelf never steals width from the cards.
-
-### 4.2 Responsive height
-
-Let `body_h` be the body height after header/rule/footer.
-
-| Condition | Activity treatment |
+| Condition | Layout |
 |---|---|
-| `width >= 96 && body_h >= 40` | Shelf, `h = clamp(round(body_h * 0.22), 7, 10)` |
-| `width >= 96 && body_h 34–39` | Shelf, `h = 6` |
+| `width >= 172 && body_h >= 46` | **Pulse rail** on the right, cards left |
+| `width >= 96 && body_h >= 40` | Full-width **shelf** below the cards |
+| `width >= 96 && body_h 34–39` | Compact shelf, 6 rows |
 | `width < 96 || body_h < 34` | One-line ticker above the footer |
 | `wall` mode | Hidden |
 | detail view | Hidden |
 
-- Always leave at least 20 rows for the card area when showing a shelf; if that
-  is impossible, demote to the ticker.
-- At 140×44: body 41 → shelf 9 → cards 32 → two rows of 15-row cards.
-- At 200×54: body 51 → shelf 10 → cards 41 → two rows of 20-row cards.
-- At 100×30: ticker 1 row → cards keep their current space.
-- Page/scale behavior is unchanged. Fewer cards per page give each card more
-  cells; the shelf height does not change.
+The rail is chosen only where it genuinely improves the screen:
 
-### 4.3 Shelf anatomy
+- `rail_w = clamp(round(width * 0.285), 48, 64)`.
+- One-cell gutter, then cards use the remaining width.
+- If `left_w / 3 >= 44`, use **3×2** cards; otherwise use **2×3**.
+- At 200×54: rail 57, cards 45×24. The charts gain height while every
+  five-digit metric stays legible.
+- At 172×46: rail 49, cards 60×14 in 2×3. The rail earns its width; the cards
+  keep readable numbers.
+- At 140×44: shelf 9 rows, cards 32 rows, exactly as in the previous design.
+- At 100×30: ticker; the metric grid keeps its current space.
+- Page/scale behavior is unchanged. Fewer cards per page give each card more
+  cells; the rail width does not change.
+
+### 4.2 Pulse rail (wide layout)
+
+The rail is a **live instrument**, not a log drawer. It occupies the vertical
+space beside the cards that the shelf design left unused, and it uses its 57
+columns for context rather than empty gutter.
+
+```text
+ ACTIVITY                         ● 3 NEW              f
+ PULSE 24H                                     24 EVENTS
+ ▂▃▅▂▇▃▁▂▄▆▃▂▁▃▅▇▅▂▁▂▃▅▆▄▂
+ ─────────────────────────────────────────────────────
+ ATTENTION · 1
+ ★★☆☆☆  Dream Eater
+ “Needs one more update”
+ GB · written review · 2h
+ ─────────────────────────────────────────────────────
+ LIVE  3 NEW
+ 02:08  +  Tailscode · Pro Monthly              +$14.99  US
+ 01:42  ★  Solar Beam                          ★★★★★  FI
+          “Finally an app that respects…”
+ 00:15  ⟳  Helia · Pro (Monthly)                +$9.99  US
+ 22:41  ☆  Living Dex · new rating             ★★★★☆  DE
+ 20:06  +  Master of Flags · Pro Lifetime       +€3.99  ES
+ ...
+────────────────────────────────────────────────────────
+ storebot 12s                                  f FULL FEED
+```
+
+- **Pulse strip.** 24 hourly bins for the last 24 hours. Each bin stacks
+  purchases (green) below reviews (gold); height is normalized within the rail.
+  A quiet hour is a one-cell baseline, not a blank. The total is shown at the
+  right. This is the “horizontal space” payoff: a temporal shape that a
+  one-line feed could not show.
+- **Attention.** If there is an unseen 1–2★ written review in the last 24h, pin
+  the newest one here with stars, app, quote and territory. If none, omit the
+  block entirely; the stream moves up. Never rotate or auto-dismiss it. The
+  pinned review is omitted from the stream below so it appears exactly once;
+  it also clears as soon as the full activity view has marked it read.
+- **Live stream.** Newest first, with date separators. Purchases and ratings
+  use one row; written reviews use two:
+  - first line: time, glyph, app, stars/amount, country;
+  - second line: the review title or a quote excerpt, indented under the app.
+  This is why the rail needs 57 columns: reviews get a readable phrase rather
+  than a filename-like truncation.
+- The rail is not focusable. `f` opens the full activity view; the rail itself
+  is a glance.
+- If the rail overflows, its header shows `+N`; the stream is not scrollable.
+- At 172 columns, the rail still shows the pulse, attention and at least six
+  events; cards switch to 2×3 rather than becoming unreadable.
+
+### 4.3 Shelf fallback (standard layout)
+
+Below the rail breakpoint, the full-width shelf remains. It uses the horizontal
+space differently: a single chronological band, with review quotes inline.
 
 ```text
  ACTIVITY  ● 3 NEW                            storebot 12s    f FULL FEED
@@ -374,36 +435,29 @@ Columns, left to right:
 | gap | 2 | |
 | country | 2 | ISO alpha-2 or `—` |
 
-- `body` truncates with `…` by display width. App name is never truncated
-  before the product; if both cannot fit, drop the product first.
-- The value column is right-aligned. Amounts use the original currency and are
-  prefixed with `+`; fallback estimates use `~+`.
-- The country column is dropped before the value column at narrow widths.
-- Date separators (`TODAY`, `YESTERDAY`, `19 OCT`) consume one row and use
-  `DIM`; they are only shown when the day changes.
-- There is no per-row box, zebra striping or alternating background. Rhythm
-  comes from the time/glyph columns and the single top rule.
-- If more rows exist than fit, the header shows `+N` next to `NEW`; the shelf is
-  not scrollable. `f` opens the full feed.
+- `body` truncates by display width. App name is never truncated before the
+  product; if both cannot fit, drop the product first.
+- Values are right-aligned. Amounts preserve the sale currency and use `+`;
+  fallback estimates use `~+`.
+- Country is dropped before value at narrow widths.
+- Date separators (`TODAY`, `YESTERDAY`, `19 OCT`) consume one row.
+- No per-row boxes, zebra stripes or alternating backgrounds. Rhythm comes from
+  the time/glyph columns and the single top rule.
+- If more rows exist than fit, the header shows `+N`; `f` opens the full feed.
 
-Header:
-
-- Left: `ACTIVITY` in `BRIGHT` bold, then a live dot and `N NEW` in `MONEY`
-  (or `LIVE` in `DIM` when there are no unread events).
-- Right: `storebot 12s` in `DIM`, then `f FULL FEED`.
-- Stale/offline: dot and text switch to `WARN`/`BAD`; the right side shows
-  `storebot offline 14m`.
-- Feed error: `FEED ERROR` in `BAD`; last good rows remain.
+Shelf height: `clamp(round(body_h * 0.22), 7, 10)` when `body_h >= 40`; `6`
+when `body_h` is 34–39. Always leave at least 20 rows for cards, otherwise
+demote to the ticker.
 
 ### 4.4 Ticker
 
-When the shelf does not fit:
+When neither the rail nor shelf fits:
 
 ```text
 ● 02:08  +  Tailscode · Pro Monthly  +$14.99  ·  01:42  ★  Solar Beam  ★★★★★   f ACTIVITY
 ```
 
-- One row, preceded by no rule; it sits directly above the footer.
+- One row above the footer.
 - Drops product first, then quote, then country; never drops time/kind/primary
   value.
 - `f` still opens the full feed.
@@ -411,11 +465,11 @@ When the shelf does not fit:
 
 ### 4.5 Empty, stale and disconnected states
 
-| State | Shelf body |
+| State | Rail / shelf body |
 |---|---|
 | No file yet | `Activity feed not connected · run storebot to start` |
 | Empty, live | `Listening for the next sale or review · started 2m ago` |
-| Storebot offline | Last 5 events remain, header `OFFLINE`; body first line `No feed updates for 14m` |
+| Storebot offline | Last events remain; header `OFFLINE`; first line `No feed updates for 14m` |
 | Filtered empty in full view | Centered: `No purchases in the last 24h` |
 | Demo | Deterministic fixture; header says `demo feed`; no writes |
 
@@ -538,7 +592,7 @@ Rating:
   it has actually been shown.
 - Opening the full view marks everything through the current newest entry as
   read. Closing it does not mark later arrivals.
-- The shelf shows `N NEW`; the full view header shows `N NEW` only while
+- The rail or shelf shows `N NEW`; the full view header shows `N NEW` only while
   scrolled away from the top.
 - Demo mode never writes `feed_seen_at`.
 
@@ -551,7 +605,7 @@ Reuse the existing theme:
 | Token | Use |
 |---|---|
 | `BG` | Canvas and card interior |
-| `SURFACE` | Activity shelf and full-view list background |
+| `SURFACE` | Activity rail, shelf and full-view list background |
 | `BORDER` / `BORDER_STRONG` | Rules, scrollbar, separators |
 | `TEXT` | App names, review titles |
 | `BRIGHT` | Active labels, selected review title |
@@ -601,7 +655,7 @@ public screenshot.
 - One space after a full stop in prose; no letter-spacing hacks.
 - **Rule of three:** at most three text tones per row: primary (app), secondary
   (product/quote), tertiary (time/country).
-- Padding: 2 cells left/right in the shelf; 2 cells in the full view.
+- Padding: 2 cells left/right in the shelf or rail; 2 cells in the full view.
 - Date headers replace a blank row; do not use extra vertical padding between
   every event.
 
@@ -630,16 +684,17 @@ Motion is acknowledgement, not decoration. Respect the existing
 
 | Moment | Full | Minimal | Off |
 |---|---|---|---|---|
-| New event arrives in shelf | 450ms accent wash + 1-cell slide-in | 180ms fade | instant |
+| New event arrives in rail/shelf | 450ms accent wash + 1-cell slide-in | 180ms fade | instant |
 | New event count increments | one 300ms brightness pulse | none | none |
 | Full view opens | 160ms fade/1-cell rise | 120ms fade | instant |
 | Selection moves | none (instant background) | none | none |
 | Feed goes stale/offline | no animation; color/status change | same | same |
 
-- Never animate the shelf height; new rows push older ones within a fixed band.
+- Never animate the rail width or shelf height; new rows push older ones
+  within a fixed band.
 - If a new event arrives while the user is reading a review in the full view,
   do not steal selection or scroll. Show the `N NEW ABOVE` marker.
-- `tachyonfx` areas must be clipped to the shelf/list rect; no full-screen
+- `tachyonfx` areas must be clipped to the rail/shelf/list rect; no full-screen
   effects for feed arrivals.
 
 ## 8. Implementation in rc-tui
@@ -649,7 +704,7 @@ Motion is acknowledgement, not decoration. Respect the existing
 ```
 src/activity.rs      feed schema, parser, sanitizer, scope matching, unread
 src/app.rs           ActivityState, timer, config integration, keys
-src/ui.rs            shelf, ticker, full view, rows, detail
+src/ui.rs            pulse rail, shelf, ticker, full view, rows, detail
 src/config.rs        feed_seen_at, optional feed_path
 ```
 
@@ -715,8 +770,11 @@ feed_path = "/custom/feed.json" # optional; default XDG state path
 
 ### 8.4 Rendering
 
-- `draw_dashboard` splits the body into `[cards, activity]` using the responsive
-  height rules.
+- `draw_dashboard` chooses rail, shelf or ticker from the responsive rules.
+  The rail split is horizontal (`[cards, rail]`); the shelf split is vertical
+  (`[cards, shelf]`).
+- `draw_activity_rail` draws the pulse strip, attention pin, header, date
+  separators, two-line reviews and stream.
 - `draw_activity_shelf` draws the top rule, header, date separators and rows.
 - `draw_activity_ticker` draws the compact one-line variant.
 - `draw_activity_view` replaces `draw_body` when the full view is open.
@@ -772,7 +830,7 @@ detail, health or help modes.
 |---|---|
 | Idle CPU added by feed | < 0.1% |
 | Feed file read/parse (500 entries) | < 2ms on change only |
-| Extra draw time for shelf | < 0.5ms at 140×44 |
+| Extra draw time for rail/shelf | < 0.5ms at 140×44, < 1ms for the 200×54 rail |
 | Memory for 500 entries | < 2 MiB |
 | Network calls added to rc-tui | 0 |
 | Feed-to-screen latency | ≤ 2.5s after storebot write |
@@ -862,7 +920,17 @@ If step 4 fails, nothing is claimed, so the event can be retried.
 
 ## 10. Mockups
 
-### 10.1 140×44 dashboard
+### 10.1 200×54 pulse rail dashboard
+
+![Pulse rail](activity-feed-main.png)
+
+The final wide layout: six 45×24 metric cards on the left, a 57-column pulse
+rail on the right. The rail carries the 24-hour pulse, attention review and
+two-line activity stream.
+
+### 10.2 140×44 shelf dashboard
+
+![Shelf fallback](activity-feed-shelf.png)
 
 ```text
 RevenueCat  ALL PROJECTS  17 projects  EUR  live                         02:48  ● live
@@ -891,7 +959,7 @@ RevenueCat  ALL PROJECTS  17 projects  EUR  live                         02:48  
  q quit  r refresh  p projects  f activity  Enter detail  ? help      updated 4s ago
 ```
 
-### 10.2 100×30 dashboard
+### 10.3 100×30 dashboard
 
 ```text
 RevenueCat  ALL PROJECTS  17 projects  EUR                      02:48  ● live
@@ -909,7 +977,9 @@ RevenueCat  ALL PROJECTS  17 projects  EUR                      02:48  ● live
  q quit  r refresh  p projects  f activity  ? help                 updated 4s ago
 ```
 
-### 10.3 200×54 full activity
+### 10.4 200×54 full activity
+
+![Full activity view](activity-feed-full.png)
 
 ```text
  ACTIVITY · ALL PROJECTS                              24H   7D   28D      ALL  MONEY  REVIEWS
@@ -944,7 +1014,9 @@ RevenueCat  ALL PROJECTS  17 projects  EUR                      02:48  ● live
 
 ### 11.2 UI tests with `TestBackend`
 
-- 200×54: shelf 10 rows; all six cards remain readable.
+- 200×54: pulse rail 57 columns; six 45×24 cards; pulse, attention and stream
+  all render.
+- 172×46: rail 49 columns; cards switch to 2×3 and remain readable.
 - 140×44: shelf 9 rows; cards remain ≥14 inner rows.
 - 100×30: ticker; cards keep their existing layout.
 - Empty, live, stale, offline, parse-error and filtered-empty states.
@@ -972,14 +1044,14 @@ RevenueCat  ALL PROJECTS  17 projects  EUR                      02:48  ● live
   and rating paths in the simulation suite.
 - Idle CPU and RSS stay within the existing envelope.
 - `cargo test`, clippy and the storebot selftest pass.
-- README demo screenshot includes the activity shelf.
+- README demo screenshot includes the pulse rail.
 
 ## 12. Rollout
 
 1. **Storebot producer** (partly done): finish `feed.json`, heartbeat, feed
    entries for all money/review/rating paths, and the `/off` decoupling.
-2. **rc-tui model + shelf**: read-only feed, health, unread, scope matching,
-   responsive shelf/ticker, demo fixture.
+2. **rc-tui model + rail/shelf**: read-only feed, health, unread, scope
+   matching, responsive rail/shelf/ticker, demo fixture.
 3. **Full activity view**: list, detail, filters, ranges, motion.
 4. **Polish**: screenshot, README, config docs, tests, install.
 5. **Verify live**: one real sale and one review should appear once in both
@@ -987,8 +1059,9 @@ RevenueCat  ALL PROJECTS  17 projects  EUR                      02:48  ● live
 
 ## 13. Decisions locked
 
-- Activity lives in a **full-width shelf**, not a right rail. It preserves the
-  metric cards and gives reviews more horizontal room.
+- Activity uses a **pulse rail at wide widths**, a full-width shelf at standard
+  widths, and a one-line ticker at narrow/short widths. The rail is the chosen
+  third iteration; the shelf remains the fallback.
 - **One-line ticker** at narrow/short terminals; `f` always opens the full
   view.
 - **Local feed file** first; the relay HTTP endpoint can come later with the
