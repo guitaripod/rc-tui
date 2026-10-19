@@ -318,7 +318,7 @@ fn draw_card(
         meta.push(Span::styled("   ·   ", Style::new().fg(BORDER)));
         meta.push(Span::styled(chip.0, Style::new().fg(chip.1)));
     }
-    if let Some(spans) = trend_spans(card, card.trend, currency, inner.width < 44) {
+    if let Some(spans) = trend_spans(card, card.trend, currency, inner.width < 46) {
         meta.push(Span::styled("   ·   ", Style::new().fg(BORDER)));
         meta.extend(spans);
     }
