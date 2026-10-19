@@ -1,186 +1,79 @@
 # rc-tui
 
-RevenueCat's Overview page in a terminal: six metric cards with sparklines, polled
-every five minutes, with tweened numbers, morphing charts and a short highlight
-on every card that changed.
-
-It can watch one project or all of them at once. "All projects" sums the same
-metrics the dashboard sums, and `p` opens a filterable project picker. Enter on a
-card opens a 7/28/90-day detail view with a per-project breakdown; `!` shows the
-health of every project, and `?` lists every key.
+RevenueCat's Overview in a terminal: six animated metric cards for one project or
+all of them, with sparklines, a project picker, 7/28/90-day metric detail, and
+per-project health.
 
 [![rc-tui demo](docs/rc-tui-demo.png)](docs/rc-tui-demo.png)
 
 *`rc-tui --demo` — 17 mocked projects, no credentials. Click for full size.*
 
-Values are the hero (big block digits), the trend compares the last week with the
-one before, and the footer keeps only the refresh status once you stop pressing
-keys. Hints appear for ten seconds after a keypress. A failing project keeps its
-last known values, the totals are marked `*`, and the header shows `n/17 live`
-instead of pretending the missing project is zero.
-
-## Many apps? Count projects, not apps
-
-Keys are per project, and a project can hold several apps (iOS, Android, web
-builds of the same product), so a dozen apps may need a dozen keys — or only two
-or three. The dashboard's project switcher shows how many projects you actually
-have.
-
-Creating the keys is the only manual part: one **+ New secret API key** per
-project, with Charts & Metrics: Read. Then bring them in together:
+## Install
 
 ```sh
-rc-tui --import
+cargo install --git https://github.com/guitaripod/rc-tui   # ~/.cargo/bin/rc-tui
+rc-tui --demo                 # look around without credentials
 ```
-
-Paste one key per line and press Ctrl+D. Every key is checked in one pass and
-the screen shows a ✓/✗ per line with the reason, so one bad key does not stop
-the rest. If a key lacks Project Configuration: Read, put its project
-id on the same line (`proj1a2b3c4d sk_…`); otherwise the id and name are
-discovered automatically. Enter saves the ones that work. `i` opens the same
-screen from the dashboard.
 
 ## Setup
 
-No configuration needed to look around:
+Run `rc-tui` once. It asks for a RevenueCat **v2 secret API key** and picks the
+project for you.
+
+1. Dashboard → your project → **API keys** → **+ New secret API key**.
+2. Grant **Charts & Metrics: Read** (`charts_metrics:overview:read`,
+   `charts_metrics:charts:read`). Adding **Project Configuration: Read**
+   (`project_configuration:projects:read`) lets rc-tui list your projects.
+3. Paste the key; answer `y` to add the next project.
+
+Keys are project-scoped: one key covers every app in its project, so a dozen apps
+may need only a few keys. For many projects at once, use `rc-tui --import` and
+paste one key per line. Credentials are saved to
+`~/.config/rc-tui/config.toml` (mode 600).
 
 ```sh
-rc-tui --demo
+rc-tui --check    # validate every saved project: metrics and charts
 ```
 
-For real numbers, run `rc-tui` once:
-
-```sh
-rc-tui
-```
-
-1. RevenueCat dashboard → your project → **API keys** → **+ New secret API key**.
-2. Grant it **Charts & Metrics: Read** — the scopes `charts_metrics:overview:read`
-   and `charts_metrics:charts:read`.
-3. Optionally add **Project Configuration: Read**
-   (`project_configuration:projects:read`) so rc-tui can list and pick your
-   project instead of asking for the id.
-4. Paste the key. Both required scopes are checked (metrics and charts) before
-   anything is saved to `~/.config/rc-tui/config.toml` (mode `600`).
-5. Answer `y` to add your next project, or `n` to open the dashboard.
-
-Docs: <https://www.revenuecat.com/docs/projects/authentication>
-
-Things the wizard handles for you:
-
-- A key that cannot list projects falls back to a project id field, no dead end.
-- A rejected key, a missing scope or a wrong project id shows the reason, the
-  exact permission or id to fix, and RevenueCat's own error link.
-- `--setup` reopens the wizard (edits the first project), `--add-project` adds a
-  new one, `s` and `a` do the same from the dashboard.
-- `--check` validates every saved project without drawing the TUI:
-
-```sh
-rc-tui --check
-```
+## Keys
 
 ```text
-Checking MagicWeather (proj1a2b3c4d) with key ••••abcd …
-  metrics ✓ 6 metrics
-    Active Trials          3
-    ...
-  charts  ✓
-Checking Notes (proj5e6f7g8h) with key ••••wxyz …
-  metrics ✓ 6 metrics
-  charts  ✓
-
-All 2 project(s) have metrics and charts. Run `rc-tui` to open the dashboard.
+dashboard   q quit · r refresh · p projects · Enter detail · ! health · ? help
+            w wall · x export CSV · a add · i import · s setup · ←→↑↓/Tab focus
+picker      type to filter · ↑↓ · Enter open · Esc close
+            Ctrl+F pin · Ctrl+E edit · Ctrl+D remove (twice)
+detail      Esc back · ↑↓ metric · t 7/28/90 days · j/k project · Enter scope
 ```
 
-Credentials resolve in this order: CLI flag, environment variable, config file.
-Flags and environment keep working; the file is only a fallback.
+`w` and pins persist in the config. `x` writes a CSV to
+`~/.local/share/rc-tui/exports/`.
 
-## Config file
+## Config
 
 ```toml
-# ~/.config/rc-tui/config.toml, mode 600
-
 currency = "EUR"
-chart_minutes = 15      # chart cache; overview still refreshes every 5 minutes
-motion = "full"         # full | minimal | off
-wall = false            # start without header/footer chrome
-pins = ["proj5e6f7g8h"] # picker order, most useful first
+chart_minutes = 15      # chart cache; the overview still refreshes every 5 min
 
 [[projects]]
 id = "proj1a2b3c4d"
 api_key = "sk_..."
 name = "MagicWeather"
-
-[[projects]]
-id = "proj5e6f7g8h"
-api_key = "sk_..."
 ```
 
-Files from earlier versions with a single `project_id` / `api_key` are migrated
-on the next save.
+Optional keys: `motion = "full" | "minimal" | "off"`, `wall = true`,
+`pins = ["proj..."]`.
 
-## Build
+## Data
 
-```sh
-cargo build --release
-cargo install --path .   # ~/.cargo/bin/rc-tui
-```
-
-## Flags
-
-| Flag | Env | Default | |
-| --- | --- | --- | --- |
-| `--project-id` | `RC_PROJECT_ID` | config file | RevenueCat project ID |
-| `--api-key` | `RC_API_KEY` | config file | v2 secret API key |
-| `--currency` | `RC_CURRENCY` | `EUR` | currency for monetary metrics |
-| `--interval` | | `300` | seconds between refreshes |
-| `--base-url` | | `https://api.revenuecat.com/v2` | API base URL |
-| `--demo` | | | synthetic data, no credentials |
-| `--check` | | | validate every project (metrics and charts) |
-| `--setup` | | | edit/re-run the setup wizard |
-| `--add-project` | | | add a project without touching the saved ones |
-| `--import` | | | bulk-add projects, one secret key per line |
-
-Supplying both `--api-key` and `--project-id` watches just that project and
-ignores the config file.
-
-Dashboard: `q`/`Esc` quit · `r` refresh (forces charts) · `p` project picker ·
-`←`/`→`/`↑`/`↓`/`Tab` move card focus · `Enter` metric detail · `!` project health ·
-`?` help · `w` wall mode · `x` export CSV · `a` add · `i` import · `s` setup.
-
-Picker: type to filter, `↑`/`↓` move, `Enter` open, `Esc` close, `Ctrl+F` pin,
-`Ctrl+E` edit, `Ctrl+D` remove (press twice).
-
-Detail: `Esc` back, `↑`/`↓` previous/next metric, `t` 7/28/90 days, `j`/`k` the
-project table, `Enter` scope the dashboard to that project.
-
-## Data sources
-
-- Cards: `GET /v2/projects/{id}/metrics/overview?currency=...`
-- Sparklines: `GET /v2/projects/{id}/charts/{name}?realtime=true&resolution=0`
-  with `trials`, `actives`, `mrr`, `revenue`, `customers_new`, `customers_active`
-  (last 28 days, annotated per card from its `period`).
-- "All projects" sums card values and resamples/sums the sparklines. It mirrors
-  the dashboard aggregate but is computed locally. A project whose key fails
-  keeps its last known values, marked `*` with `n/17 live`; the health view (`!`)
-  names it and `r` retries.
-- Charts are cached for 15 minutes (`chart_minutes`); the overview refreshes
-  every five minutes. `r` forces every chart. The detail view fetches 90-day
-  charts on demand: one request per project for "All projects", one for a scoped
-  project.
-
-The key needs the Charts & Metrics scopes `charts_metrics:overview:read` and
-`charts_metrics:charts:read`. Charts are production-only; a v1 key will not work
-against the v2 API. Charts & Metrics allow 25 requests per minute per project.
-An automatic refresh sends one overview request per project and charts only when
-the 15-minute cache expires.
-
-## Not available in the public API
-
-- The Recent transactions feed has no endpoint; it can only be reconstructed
-  per customer/subscription, so it is not shown.
-- There is no sandbox/production toggle for these metrics.
-- New and Active Customers can be cached by RevenueCat for one to two hours.
+- Cards: `GET /v2/projects/{id}/metrics/overview`; sparklines:
+  `GET /v2/projects/{id}/charts/{name}` (28 days).
+- "All projects" sums projects locally. A failed project keeps its last known
+  values; totals are marked `*`, the header shows `n/17 live`, and `!` names the
+  failure.
+- Charts cache for 15 minutes; `r` forces a refresh. Charts & Metrics are
+  production-only; v1 keys do not work with v2.
+- The Recent transactions feed and the sandbox toggle have no public API. New
+  and Active Customers can lag by one to two hours.
 
 ## License
 
