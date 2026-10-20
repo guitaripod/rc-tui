@@ -12,7 +12,7 @@ use tachyonfx::{
     CellFilter, Duration as FxDuration, EffectManager, Interpolation, Motion as FxMotion, fx,
 };
 
-use crate::activity::{Activity, Entry, Filter, Range};
+use crate::activity::{Activity, Celebration, Entry, Filter, Range};
 use crate::api::{self, Client, Failure, OverviewMetric, Snapshot};
 use crate::config;
 use crate::theme;
@@ -755,7 +755,21 @@ impl App {
         self.last_frame = now;
         self.frame_delta = FxDuration::from_millis(delta.as_millis().min(250) as u32);
         if self.activity.refresh(now) {
-            self.animating_until = now + Duration::from_secs(1);
+            self.animating_until = now
+                + if self.activity.is_celebrating(now) {
+                    Duration::from_secs(3)
+                } else {
+                    Duration::from_secs(1)
+                };
+            if self.activity.open
+                && self
+                    .activity
+                    .current_celebration(now)
+                    .is_some_and(Celebration::major)
+                && let Some(entry) = self.activity.entries.first()
+            {
+                self.activity.selected_id = Some(entry.id.clone());
+            }
         }
 
         let mut apply_cards = false;
@@ -789,6 +803,7 @@ impl App {
     pub fn poll_timeout(&self) -> Duration {
         let busy = matches!(self.status, Status::Fetching)
             || Instant::now() < self.animating_until
+            || self.activity.is_celebrating(Instant::now())
             || self.last_input.elapsed() < Duration::from_secs(1);
         if busy {
             Duration::from_millis(33)

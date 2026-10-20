@@ -56,10 +56,12 @@ writes a CSV to `~/.local/share/rc-tui/exports/`.
 `f` opens the activity feed; on wide terminals it is always visible in a rail
 beside the cards. It reads `~/.local/state/storebot/feed.json`, written by
 [storebot](https://github.com/guitaripod/storebot). The feed contains live sales,
-renewals, App Store purchases, written reviews and rating-only events. On first
-run it seeds 14 days of paid App Store sales, 28 days of written reviews and the
-current two days of hook-log purchases; seed rows are marked as history and are
-never counted as new.
+renewals, App Store purchases, written reviews and rating-only events. Each item
+is a card with a full title that wraps instead of truncating; first-ever sales,
+big sales, five-star reviews and reviews that need attention light the whole
+activity section. On first run it seeds 14 days of paid App Store sales, 28 days
+of written reviews and the current two days of hook-log purchases; seed rows are
+marked as history and are never counted as new.
 
 rc-tui only reads the feed: it makes no extra RevenueCat, App Store or Telegram
 requests. Without storebot, the rail shows `NOT CONNECTED` and the metric

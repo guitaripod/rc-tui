@@ -82,6 +82,48 @@ impl Range {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CelebrationTone {
+    Money,
+    Stars,
+    Alert,
+    Quiet,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CelebrationLevel {
+    Minor,
+    Major,
+}
+
+#[derive(Debug, Clone)]
+pub struct Celebration {
+    pub entry: Entry,
+    pub level: CelebrationLevel,
+    pub tone: CelebrationTone,
+    pub headline: &'static str,
+    pub started: Instant,
+    pub duration: Duration,
+}
+
+impl Celebration {
+    pub fn progress(&self, now: Instant) -> Option<f32> {
+        let elapsed = now.saturating_duration_since(self.started);
+        if elapsed >= self.duration {
+            return None;
+        }
+        Some((elapsed.as_secs_f32() / self.duration.as_secs_f32()).clamp(0.0, 1.0))
+    }
+
+    pub fn active(&self, now: Instant) -> bool {
+        self.progress(now).is_some()
+    }
+
+    pub fn major(&self) -> bool {
+        self.level == CelebrationLevel::Major
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EntryKind {
     Purchase,
     Review,
@@ -210,18 +252,6 @@ impl Entry {
         }
     }
 
-    pub fn review_excerpt(&self, max: usize) -> String {
-        let Some(review) = &self.review else {
-            return String::new();
-        };
-        let text = if review.title.is_empty() {
-            one_line(&review.body)
-        } else {
-            review.title.clone()
-        };
-        truncate_width(&text, max)
-    }
-
     pub fn timestamp(&self) -> i64 {
         if self.at > 0 {
             self.at
@@ -270,8 +300,10 @@ pub struct Activity {
     pub error: Option<String>,
     pub demo: bool,
     pub last_arrival: Option<Instant>,
+    pub celebration: Option<Celebration>,
     next_poll: Instant,
     seen_was_set: bool,
+    loaded_once: bool,
     last_mtime: Option<std::time::SystemTime>,
     last_len: u64,
 }
@@ -296,14 +328,17 @@ impl Activity {
             error: None,
             demo,
             last_arrival: None,
+            celebration: None,
             next_poll: now,
             seen_was_set: seen_at.is_some(),
+            loaded_once: false,
             last_mtime: None,
             last_len: 0,
         };
         if demo {
             activity.entries = demo_entries(now_ms);
             activity.seen_was_set = true;
+            activity.loaded_once = true;
             activity.seen_at = now_ms - 6 * 3_600_000;
             activity.selected_id = activity.entries.first().map(|entry| entry.id.clone());
         } else {
@@ -335,6 +370,9 @@ impl Activity {
                         } else {
                             let previous = self.entries.first().map(|entry| entry.id.clone());
                             let previous_max = self.max_received();
+                            let previous_ids: HashSet<String> =
+                                self.entries.iter().map(|entry| entry.id.clone()).collect();
+                            let first_load = !self.loaded_once;
                             self.entries = document
                                 .entries
                                 .into_iter()
@@ -346,6 +384,19 @@ impl Activity {
                             changed = previous
                                 != self.entries.first().map(|entry| entry.id.clone())
                                 || new_max > previous_max;
+                            if !first_load {
+                                let fresh = self
+                                    .entries
+                                    .iter()
+                                    .filter(|entry| {
+                                        !entry.backfilled && !previous_ids.contains(&entry.id)
+                                    })
+                                    .max_by_key(|entry| entry.received_at);
+                                if let Some(entry) = fresh {
+                                    self.celebration = Some(celebration_for(entry));
+                                }
+                            }
+                            self.loaded_once = true;
                             if !self.seen_was_set && !self.entries.is_empty() {
                                 self.seen_at = new_max;
                                 self.seen_was_set = true;
@@ -384,6 +435,16 @@ impl Activity {
             self.last_arrival = Some(now);
         }
         changed
+    }
+
+    pub fn current_celebration(&self, now: Instant) -> Option<&Celebration> {
+        self.celebration
+            .as_ref()
+            .filter(|celebration| celebration.active(now))
+    }
+
+    pub fn is_celebrating(&self, now: Instant) -> bool {
+        self.current_celebration(now).is_some()
     }
 
     pub fn mark_seen(&mut self) -> bool {
@@ -584,25 +645,6 @@ fn clean_body(value: &str, limit: usize) -> String {
     text.chars().take(limit).collect()
 }
 
-fn truncate_width(value: &str, max: usize) -> String {
-    use unicode_width::UnicodeWidthChar;
-    if max == 0 {
-        return String::new();
-    }
-    let mut width = 0;
-    let mut result = String::new();
-    for character in value.chars() {
-        let char_width = character.width().unwrap_or(0);
-        if width + char_width > max.saturating_sub(1) {
-            result.push('…');
-            break;
-        }
-        width += char_width;
-        result.push(character);
-    }
-    result
-}
-
 fn name_key(value: &str) -> String {
     value
         .chars()
@@ -633,6 +675,80 @@ fn age(milliseconds: i64) -> String {
         3..=59 => format!("{seconds}s"),
         60..=3599 => format!("{}m", seconds / 60),
         _ => format!("{}h", seconds / 3600),
+    }
+}
+
+fn celebration_for(entry: &Entry) -> Celebration {
+    let (headline, tone, level) = match entry.kind() {
+        EntryKind::Purchase => {
+            let purchase = entry.purchase.as_ref();
+            if purchase.is_some_and(|purchase| purchase.event == "revenue") {
+                (
+                    "REVENUE MOVED",
+                    CelebrationTone::Quiet,
+                    CelebrationLevel::Minor,
+                )
+            } else if purchase.is_some_and(|purchase| purchase.first_ever) {
+                (
+                    "FIRST EVER SALE",
+                    CelebrationTone::Money,
+                    CelebrationLevel::Major,
+                )
+            } else if purchase.is_some_and(|purchase| purchase.first_today) {
+                (
+                    "FIRST SALE TODAY",
+                    CelebrationTone::Money,
+                    CelebrationLevel::Major,
+                )
+            } else if purchase.is_some_and(|purchase| purchase.amount >= 25.0) {
+                ("BIG SALE", CelebrationTone::Money, CelebrationLevel::Major)
+            } else if purchase.is_some_and(|purchase| purchase.event == "renewal") {
+                ("RENEWAL", CelebrationTone::Money, CelebrationLevel::Minor)
+            } else {
+                ("NEW SALE", CelebrationTone::Money, CelebrationLevel::Minor)
+            }
+        }
+        EntryKind::Review => match entry.stars().unwrap_or(0) {
+            stars if stars <= 2 => (
+                "NEEDS ATTENTION",
+                CelebrationTone::Alert,
+                CelebrationLevel::Major,
+            ),
+            5 => (
+                "FIVE STARS",
+                CelebrationTone::Stars,
+                CelebrationLevel::Major,
+            ),
+            _ => (
+                "NEW REVIEW",
+                CelebrationTone::Stars,
+                CelebrationLevel::Minor,
+            ),
+        },
+        EntryKind::Rating => match entry.stars().unwrap_or(0) {
+            stars if stars <= 2 => (
+                "RATING DROPPED",
+                CelebrationTone::Alert,
+                CelebrationLevel::Major,
+            ),
+            _ => (
+                "NEW RATING",
+                CelebrationTone::Quiet,
+                CelebrationLevel::Minor,
+            ),
+        },
+        EntryKind::Unknown => ("ACTIVITY", CelebrationTone::Quiet, CelebrationLevel::Minor),
+    };
+    Celebration {
+        entry: entry.clone(),
+        level,
+        tone,
+        headline,
+        started: Instant::now(),
+        duration: match level {
+            CelebrationLevel::Major => Duration::from_millis(2600),
+            CelebrationLevel::Minor => Duration::from_millis(1400),
+        },
     }
 }
 
@@ -922,6 +1038,42 @@ mod tests {
     }
 
     #[test]
+    fn significant_events_get_a_full_celebration() {
+        let mut first = entry("proj1", "One");
+        first.purchase = Some(Purchase {
+            amount: 3.99,
+            first_ever: true,
+            first_today: true,
+            ..Purchase::default()
+        });
+        let first = celebration_for(&first);
+        assert_eq!(first.level, CelebrationLevel::Major);
+        assert_eq!(first.headline, "FIRST EVER SALE");
+
+        let mut review = entry("proj1", "One");
+        review.kind = "review".to_string();
+        review.purchase = None;
+        review.review = Some(Review {
+            stars: 5,
+            ..Review::default()
+        });
+        let review = celebration_for(&review);
+        assert_eq!(review.level, CelebrationLevel::Major);
+        assert_eq!(review.headline, "FIVE STARS");
+
+        let mut warning = entry("proj1", "One");
+        warning.kind = "review".to_string();
+        warning.purchase = None;
+        warning.review = Some(Review {
+            stars: 2,
+            ..Review::default()
+        });
+        let warning = celebration_for(&warning);
+        assert_eq!(warning.level, CelebrationLevel::Major);
+        assert_eq!(warning.headline, "NEEDS ATTENTION");
+    }
+
+    #[test]
     fn ranges_filter_by_event_time() {
         let now = 1_760_000_000_000;
         let mut item = entry("proj1", "One");
@@ -940,8 +1092,10 @@ mod tests {
             error: None,
             demo: true,
             last_arrival: None,
+            celebration: None,
             next_poll: Instant::now(),
             seen_was_set: true,
+            loaded_once: true,
             last_mtime: None,
             last_len: 0,
         };

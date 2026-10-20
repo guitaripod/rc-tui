@@ -1,6 +1,6 @@
 # Activity Feed — design and implementation spec
 
-Status: **design complete, ready for implementation**
+Status: **implemented**
 Scope: the main rc-tui dashboard plus a read-only activity producer in storebot.
 
 ![Activity pulse rail mockup](activity-feed-main.png)
@@ -18,8 +18,10 @@ It should feel like part of the dashboard: quiet until something arrives,
 specific when it does, and never allowed to shrink the metric cards into
 illegibility.
 
-One line per event. One glance for the gist. A full view for the review text,
-the product, the country and the source.
+Every event is a small card with a full app title, product or review title,
+amount, territory and age. Titles wrap instead of truncating. A full view adds
+the review text, event source, transaction identity and a quiet moment of
+celebration for the events that deserve it.
 
 ### Design principles
 
@@ -39,6 +41,10 @@ the product, the country and the source.
    review text are stripped before rendering.
 7. **Failure is visible, not fatal.** A missing or stale feed never breaks the
    dashboard; it gets a precise, quiet health state.
+8. **Celebrate the exception.** A first-ever sale, the first sale today, a big
+   sale, a five-star review or a review that needs attention lights the whole
+   activity section; in the full view it lights the whole screen. Ordinary
+   events still get a small acknowledgement.
 
 ## 2. Architecture
 
@@ -341,9 +347,10 @@ specifies the chosen third pass.
 | Condition | Layout |
 |---|---|
 | `width >= 172 && body_h >= 43` | **Pulse rail** on the right, cards left |
-| `width >= 96 && body_h >= 40` | Full-width **shelf** below the cards |
-| `width >= 96 && body_h 34–39` | Compact shelf, 6 rows |
-| `width < 96 || body_h < 34` | One-line ticker above the footer |
+| `width >= 96 && body_h >= 40` | Full-width **shelf** of event cards below the cards |
+| `width >= 96 && body_h 30–39` | Compact shelf of event cards, 8 rows |
+| `width >= 96 && body_h >= 18` | Two-line ticker above the footer |
+| `width < 96 || body_h < 18` | One-line ticker above the footer |
 | `wall` mode | Hidden |
 | detail view | Hidden |
 
@@ -356,8 +363,9 @@ The rail is chosen only where it genuinely improves the screen:
   five-digit metric stays legible.
 - At 172×46 (body 43): rail 49, cards 60×14 in 2×3. The rail earns its width;
   the cards keep readable numbers.
-- At 140×44: shelf 9 rows, cards 32 rows, exactly as in the previous design.
-- At 100×30: ticker; the metric grid keeps its current space.
+- At 140×44: shelf 9 rows of cards; the metric grid keeps its current space.
+- At 120×36: compact shelf, 8 rows; each event card gets full title wrapping.
+- At 100×28: two-line ticker; the metric grid keeps its current space.
 - Page/scale behavior is unchanged. Fewer cards per page give each card more
   cells; the rail width does not change.
 
@@ -401,12 +409,12 @@ columns for context rather than empty gutter.
   it also clears as soon as the full activity view has marked it read.
 - **Live stream.** Newest first, last **7 days**, with date separators. The
   pulse is deliberately the only 24-hour surface; the stream stays useful for
-  low-volume apps whose last review was days ago. Purchases and ratings use one
-  row; written reviews use two:
-  - first line: time, glyph, app, stars/amount, country;
-  - second line: the review title or a quote excerpt, indented under the app.
-  This is why the rail needs 57 columns: reviews get a readable phrase rather
-  than a filename-like truncation.
+  low-volume apps whose last review was days ago. Every event is a compact card:
+  - first line: time, glyph, full app title, right-aligned amount or stars;
+  - second line: full product name, or the full written-review title in quotes;
+  - third line: event type, territory and age.
+  Titles wrap to as many lines as they need; they are never shortened with an
+  ellipsis. The rail needs 48–64 columns because a title may wrap there.
 - The rail is not focusable. `f` opens the full activity view; the rail itself
   is a glance.
 - If the rail overflows, its header shows `+N`; the stream is not scrollable.
@@ -415,62 +423,67 @@ columns for context rather than empty gutter.
 
 ### 4.3 Shelf fallback (standard layout)
 
-Below the rail breakpoint, the full-width shelf remains. It uses the horizontal
-space differently: a single chronological band, with review quotes inline.
+Below the rail breakpoint, the full-width shelf becomes a horizontal strip of
+event cards. It uses the width for parallel stories instead of one thin line.
 
 ```text
- ACTIVITY  ● 3 NEW                            storebot 12s    f FULL FEED
- TODAY
- 02:08  +  Tailscode · Pro Monthly                  +$14.99   US
- 01:42  ★  Solar Beam · “Finally an app that…”     ★★★★★   FI
- 00:15  ⟳  Helia · Pro (Monthly)                    +$9.99   US
- YESTERDAY
- 22:41  ☆  Living Dex · new rating                 ★★★★☆   DE
+ ACTIVITY  ● 3 NEW   LIVE                              f FULL FEED
+ ▎ 02:08  +  Tailscode: Coding Agent Remote       +$14.99
+ ▎          Tailscode Pro
+ ▎          new purchase · US · 2h ago
+ ─────────────────────────────────────────────────────────────
+ ▎ 01:42  ★  Solar Beam                           ★★★★★
+ ▎          “Finally an app that respects battery”
+ ▎          written review · FI · 18m ago
 ```
 
-Columns, left to right:
-
-| Column | Width | Content |
-|---|---:|---|
-| time | 5 | `HH:MM`, 24-hour local |
-| gap | 2 | |
-| glyph | 1 | supplied by event kind/type |
-| gap | 2 | |
-| body | flex | app, product or review quote |
-| gap | 2 | |
-| value | 10 | amount, stars or `avg 4.9` |
-| gap | 2 | |
-| country | 2 | ISO alpha-2 or `—` |
-
-- `body` truncates by display width. App name is never truncated before the
-  product; if both cannot fit, drop the product first.
-- Values are right-aligned. Amounts preserve the sale currency and use `+`;
-  fallback estimates use `~+`.
-- Country is dropped before value at narrow widths.
-- Date separators (`TODAY`, `YESTERDAY`, `19 OCT`) consume one row.
-- No per-row boxes, zebra stripes or alternating backgrounds. Rhythm comes from
-  the time/glyph columns and the single top rule.
-- If more rows exist than fit, the header shows `+N`; `f` opens the full feed.
-
-Shelf height: `clamp(round(body_h * 0.22), 7, 10)` when `body_h >= 40`; `6`
-when `body_h` is 34–39. Always leave at least 20 rows for cards, otherwise
-demote to the ticker.
+- Two to four cards share the shelf, each with a colored left spine, full title,
+  full product/review title and metadata.
+- Titles wrap; they never use an ellipsis. Values stay right-aligned.
+- A card can be 4–6 rows tall. The shelf height is `7` at `body_h >= 30`, and
+  `clamp(round(body_h * 0.22), 7, 10)` at `body_h >= 40`.
+- If more events exist than shown, the header reports `+N MORE`; `f` opens the
+  full feed.
 
 ### 4.4 Ticker
 
 When neither the rail nor shelf fits:
 
 ```text
-● 02:08  +  Tailscode · Pro Monthly  +$14.99  ·  01:42  ★  Solar Beam  ★★★★★   f ACTIVITY
+● 02:08  +  Tailscode: Coding Agent Remote              +$14.99
+    Pro Monthly · US                         LIVE   f ACTIVITY
 ```
 
-- One row above the footer.
-- Drops product first, then quote, then country; never drops time/kind/primary
-  value.
-- `f` still opens the full feed.
-- `N NEW` replaces the leading dot when unread.
+- Two rows when the terminal can spare them, one otherwise.
+- The app title is never abbreviated. It may wrap to the second row; metadata
+  follows on the same row when it fits.
+- `f` opens the full feed; `N NEW` replaces the leading dot when unread.
 
-### 4.5 Empty, stale and disconnected states
+### 4.5 Celebration
+
+A new event that crosses the significance line takes over the activity surface
+for 2.6 seconds.
+
+| Event | Banner | Surface |
+|---|---|---|
+| First-ever sale | `FIRST EVER SALE` | money accent |
+| First sale today | `FIRST SALE TODAY` | money accent |
+| Sale ≥ 25 | `BIG SALE` | money accent |
+| Five-star review | `FIVE STARS` | star accent |
+| Written review ≤ 2★ | `NEEDS ATTENTION` | alert accent |
+| Any other new event | `NEW SALE` / `NEW REVIEW` / `NEW RATING` | compact banner only |
+
+- **Rail and shelf:** the whole activity section — header, pulse, cards and
+  metadata — is washed with a low-alpha accent, a light sweep crosses it, and
+  the banner names the event. Ordinary events get only the compact banner.
+- **Full activity view:** the whole screen is washed and swept. The selected
+  event jumps to the new item so the detail panel agrees with the celebration.
+- **Motion:** `minimal` keeps the banner and wash without the sweep; `off` keeps
+  only the banner. No permanent animation, no blinking.
+- **No title truncation anywhere in the celebration.** The banner may wrap; it
+  never replaces the full title in the card or detail panel.
+
+### 4.6 Empty, stale and disconnected states
 
 | State | Rail / shelf body |
 |---|---|
@@ -509,10 +522,11 @@ activity workspace.
 - List header includes scope, range and filter. Active chips use `BRIGHT` with
   a `SURFACE` background; inactive chips use `DIM`.
 - Selected row uses `SELECTION` background and a 1-cell category accent bar.
-- A 1-cell scrollbar sits on the right edge of the list; thumb `BORDER_STRONG`,
-  track `BORDER`.
-- The detail pane is a calm, text-first inspector. It has no box; a single top
-  rule and a label (`PURCHASE`, `WRITTEN REVIEW`, `RATING`) establish hierarchy.
+- A 1-cell scrollbar sits on the right edge of the list; thumb `DIM`, track
+  `BORDER`.
+- The detail pane is a calm, text-first inspector. A left `BORDER_STRONG`
+  spine and a label (`PURCHASE`, `WRITTEN REVIEW`, `RATING`) establish
+  hierarchy.
 
 ### 5.2 Narrow layout (<150 columns)
 
@@ -781,16 +795,17 @@ feed_path = "/custom/feed.json" # optional; default XDG state path
   The rail split is horizontal (`[cards, rail]`); the shelf split is vertical
   (`[cards, shelf]`).
 - `draw_activity_rail` draws the pulse strip, attention pin, header, date
-  separators, two-line reviews and stream.
-- `draw_activity_shelf` draws the top rule, header, date separators and rows.
-- `draw_activity_ticker` draws the compact one-line variant.
-- `draw_activity_view` replaces `draw_body` when the full view is open.
-- `draw_activity_list`, `draw_activity_detail`, `draw_activity_modal`.
-- Reuse `truncate` but add a display-width-aware helper for review titles and
-  app names (`unicode-width`).
-- No per-frame allocation of feed strings; precompute display rows when the
-  feed or filter changes, then render the visible slice.
-- Keep all row calculations pure and unit-testable.
+  separators and event cards.
+- `draw_activity_shelf` draws the top rule, header and a horizontal row of
+  event cards.
+- `draw_activity_ticker` draws the compact one/two-line variant.
+- `draw_activity` replaces `draw_body` when the full view is open;
+  `draw_activity_list` and `draw_activity_detail` render the panes.
+- `make_feed_card` wraps full app titles, product names and written-review
+  titles with a display-width-aware helper. It never inserts an ellipsis in a
+  title.
+- `draw_celebration` paints the section or full screen for significant events.
+- Keep card and selection calculations pure and unit-testable.
 
 ### 8.5 Keys
 
@@ -991,18 +1006,9 @@ RevenueCat  ALL PROJECTS  17 projects  EUR                      02:48  ● live
 
 ![Full activity view](activity-feed-full.png)
 
-```text
- ACTIVITY · ALL PROJECTS                              24H   7D   28D      ALL  MONEY  REVIEWS
- ────────────────────────────────────────────────────────────────────────────────────────────
- TODAY
- 02:08  +  Tailscode · Pro Monthly                                    +$14.99  US
- 01:42  ★  Solar Beam — “Finally an app that respects…”                 ★★★★★  FI
- 00:15  ⟳  Helia · Pro (Monthly)                                        +$9.99  US
- YESTERDAY
- 22:41  ☆  Living Dex · new rating                                     ★★★★☆  DE
- 20:06  +  Master of Flags · Pro Lifetime                              +€3.99  ES
- 18:54  ~  Flaccy macOS · revenue estimate                              +$7.55  —
- ────────────────────────────────────────────────────────────────────────────────────────────
+The full view is a 24-hour pulse strip, a card list with full titles, and a
+detail panel with the complete review text or transaction identity. Dates are
+grouped; every card carries its own left spine and right-aligned value.
  ★★★★★  Solar Beam                                              Finland · 2h ago
  “Finally an app that respects battery”
  The best solar app I have used. It shows the forecast clearly, ...
