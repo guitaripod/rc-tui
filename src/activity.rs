@@ -486,8 +486,8 @@ impl Activity {
         };
         self.entries
             .iter()
+            .filter(|entry| !entry.is_history())
             .filter(|entry| entry.timestamp() >= cutoff)
-            .filter(|entry| range == Range::All || !entry.is_history())
             .filter(|entry| entry.scope_matches(scope_id, scope_label))
             .filter(|entry| match filter {
                 Filter::All => true,
@@ -1146,7 +1146,7 @@ mod tests {
             activity
                 .entries_for(None, "All projects", Filter::All, Range::All, now)
                 .len(),
-            2
+            1
         );
         assert_eq!(Range::ALL.len(), 4);
     }

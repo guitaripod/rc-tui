@@ -7,12 +7,11 @@ use std::time::{Duration, Instant};
 use chrono::Days;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Rect;
-use ratatui::style::Color;
 use tachyonfx::{
     CellFilter, Duration as FxDuration, EffectManager, Interpolation, Motion as FxMotion, fx,
 };
 
-use crate::activity::{Activity, Celebration, Entry, Filter, Range};
+use crate::activity::{Activity, Celebration, Entry, EntryKind, Filter, Range};
 use crate::api::{self, Client, Failure, OverviewMetric, Snapshot};
 use crate::config;
 use crate::theme;
@@ -1096,6 +1095,29 @@ impl App {
         ratings
     }
 
+    pub fn activity_rating_total(&self) -> i64 {
+        let summaries = self.activity_ratings();
+        let Some(seeded) = summaries.iter().map(|entry| entry.received_at).max() else {
+            return 0;
+        };
+        let base: i64 = summaries
+            .iter()
+            .map(|entry| entry.rating.as_ref().map_or(0, |rating| rating.count))
+            .sum();
+        let scope_id = self.scope_id().map(str::to_string);
+        let label = self.scope_label();
+        let fresh: i64 = self
+            .activity
+            .entries
+            .iter()
+            .filter(|entry| entry.kind() == EntryKind::Rating && !entry.is_history())
+            .filter(|entry| entry.timestamp() > seeded)
+            .filter(|entry| entry.scope_matches(scope_id.as_deref(), &label))
+            .map(|entry| entry.rating.as_ref().map_or(0, |rating| rating.count))
+            .sum();
+        base + fresh
+    }
+
     pub fn activity_attention(&self) -> Option<&Entry> {
         let scope_id = self.scope_id().map(str::to_string);
         let label = self.scope_label();
@@ -1539,7 +1561,7 @@ impl App {
                     FxMotion::LeftToRight,
                     24,
                     0,
-                    Color::Rgb(10, 12, 16),
+                    theme::bg(),
                     (600u32, Interpolation::QuadOut),
                 ));
             }
@@ -1595,6 +1617,10 @@ impl App {
             }
             KeyCode::Char('w') => {
                 self.toggle_wall();
+                Intent::None
+            }
+            KeyCode::Char('T') => {
+                self.toggle_theme();
                 Intent::None
             }
             KeyCode::Char('+') | KeyCode::Char('=') => {
@@ -1720,6 +1746,24 @@ impl App {
             picker.selected = picker.selected.min(count.saturating_sub(1));
         }
         Intent::None
+    }
+
+    fn toggle_theme(&mut self) {
+        let mode = theme::toggle();
+        let suffix = if self.demo {
+            String::new()
+        } else if self.save_theme_pref(mode).is_ok() {
+            " (saved)".to_string()
+        } else {
+            " (not saved)".to_string()
+        };
+        self.notice = Some((format!("{} theme{suffix}", mode.label()), Instant::now()));
+    }
+
+    fn save_theme_pref(&self, mode: theme::Mode) -> Result<(), String> {
+        let mut config = config::Config::load();
+        config.theme = Some(mode.label().to_string());
+        config.save().map(|_| ()).map_err(|err| err.to_string())
     }
 
     fn toggle_wall(&mut self) {
@@ -1994,6 +2038,57 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         assert!(app.has_data(), "no data arrived");
+    }
+
+    #[test]
+    fn rating_total_adds_only_events_observed_after_the_all_time_seed() {
+        let mut app = demo_app();
+        let seeded = 1_760_000_000_000;
+        let summary = Entry {
+            id: "rating-history:app".to_string(),
+            kind: "rating".to_string(),
+            received_at: seeded,
+            app: "One".to_string(),
+            project_id: "proj1".to_string(),
+            backfilled: true,
+            rating: Some(crate::activity::Rating {
+                count: 24,
+                average: 4.7,
+                summary: true,
+                ..crate::activity::Rating::default()
+            }),
+            ..Entry::default()
+        };
+        let live = Entry {
+            id: "rating:app:us:25".to_string(),
+            kind: "rating".to_string(),
+            at: seeded + 1_000,
+            received_at: seeded + 1_000,
+            app: "One".to_string(),
+            project_id: "proj1".to_string(),
+            rating: Some(crate::activity::Rating {
+                count: 1,
+                average: 4.8,
+                ..crate::activity::Rating::default()
+            }),
+            ..Entry::default()
+        };
+        let already_counted = Entry {
+            id: "rating:app:us:24".to_string(),
+            kind: "rating".to_string(),
+            at: seeded - 1_000,
+            received_at: seeded + 2_000,
+            app: "One".to_string(),
+            project_id: "proj1".to_string(),
+            rating: Some(crate::activity::Rating {
+                count: 1,
+                average: 4.7,
+                ..crate::activity::Rating::default()
+            }),
+            ..Entry::default()
+        };
+        app.activity.entries = vec![summary, live, already_counted];
+        assert_eq!(app.activity_rating_total(), 25);
     }
 
     #[test]

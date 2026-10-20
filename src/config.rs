@@ -20,6 +20,9 @@ pub struct Config {
     pub motion: Option<String>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub theme: Option<String>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wall: Option<bool>,
 
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -234,11 +237,12 @@ mod tests {
     #[test]
     fn parses_preferences_and_pins() {
         let config = Config::parse(
-            "currency = \"EUR\"\nchart_minutes = 20\nmotion = \"minimal\"\nwall = true\npins = [\"proj2\"]\n",
+            "currency = \"EUR\"\nchart_minutes = 20\nmotion = \"minimal\"\ntheme = \"light\"\nwall = true\npins = [\"proj2\"]\n",
         )
         .unwrap();
         assert_eq!(config.chart_minutes, Some(20));
         assert_eq!(config.motion.as_deref(), Some("minimal"));
+        assert_eq!(config.theme.as_deref(), Some("light"));
         assert_eq!(config.wall, Some(true));
         assert_eq!(config.pins, vec!["proj2".to_string()]);
     }

@@ -14,16 +14,21 @@ use crate::api::{DOCS_API_KEYS, Failure, SCOPE_CHARTS, SCOPE_OVERVIEW, SCOPE_PRO
 use crate::app::{App, Card, Motion, RowState, Status, Trend, Window};
 use crate::import::{Import, Stage as ImportStage};
 use crate::setup::{Setup, Stage};
-use crate::theme::{
-    BAD, BG, BORDER, BORDER_STRONG, BRIGHT, DIM, GOOD, MONEY, RETENTION, SELECTION, SURFACE, TEXT,
-    TRIAL, WARN, shade,
-};
+use crate::theme::{self, shade};
 
 pub use crate::theme::accent;
+
+fn paint_background(frame: &mut Frame) {
+    let area = frame.area();
+    frame
+        .buffer_mut()
+        .set_style(area, Style::new().bg(theme::bg()));
+}
 
 pub fn draw(app: &mut App, frame: &mut Frame) {
     let area = frame.area();
     let now = Instant::now();
+    paint_background(frame);
 
     if app.detail.is_some() {
         draw_detail(app, frame, area, now);
@@ -82,58 +87,63 @@ fn draw_header(app: &App, frame: &mut Frame, area: Rect, now: Instant) {
     let mut spans = vec![
         Span::styled(
             " RevenueCat",
-            Style::new().fg(DIM).add_modifier(Modifier::BOLD),
+            Style::new().fg(theme::dim()).add_modifier(Modifier::BOLD),
         ),
         Span::styled("    ", Style::new()),
         Span::styled(
             app.scope_label().to_uppercase(),
-            Style::new().fg(BRIGHT).add_modifier(Modifier::BOLD),
+            Style::new()
+                .fg(theme::bright())
+                .add_modifier(Modifier::BOLD),
         ),
     ];
     if let Some(id) = app.scope_id() {
-        spans.push(Span::styled(format!("  {id}"), Style::new().fg(DIM)));
+        spans.push(Span::styled(
+            format!("  {id}"),
+            Style::new().fg(theme::dim()),
+        ));
     }
     if app.scope == 0 && app.project_count() > 1 {
         spans.push(Span::styled(
             format!("    {} projects", app.project_count()),
-            Style::new().fg(DIM),
+            Style::new().fg(theme::dim()),
         ));
     }
     spans.push(Span::styled(
         format!("    {}", app.currency),
-        Style::new().fg(DIM),
+        Style::new().fg(theme::dim()),
     ));
     if app.ui_scale > 0 {
         spans.push(Span::styled(
             format!("    {} / page", app.per_page()),
-            Style::new().fg(DIM),
+            Style::new().fg(theme::dim()),
         ));
     }
     if app.demo {
-        spans.push(Span::styled("    demo", Style::new().fg(WARN)));
+        spans.push(Span::styled("    demo", Style::new().fg(theme::warn())));
     }
     frame.render_widget(Paragraph::new(Line::from(spans)), left);
 
     let (indicator, color) = if matches!(app.status, Status::Fetching) {
-        ("updating".to_string(), DIM)
+        ("updating".to_string(), theme::dim())
     } else if let Status::Error(_) = app.status {
-        ("error".to_string(), BAD)
+        ("error".to_string(), theme::bad())
     } else if !app.has_data() {
-        ("loading".to_string(), DIM)
+        ("loading".to_string(), theme::dim())
     } else if app.stale(now) {
         let text = if app.partial() {
             format!("{}/{} live · stale", app.live_count(), app.project_count())
         } else {
             "stale".to_string()
         };
-        (text, WARN)
+        (text, theme::warn())
     } else if app.partial() {
         (
             format!("{}/{} live", app.live_count(), app.project_count()),
-            WARN,
+            theme::warn(),
         )
     } else {
-        ("live".to_string(), GOOD)
+        ("live".to_string(), theme::good())
     };
     let page = if app.ui_scale > 0 {
         format!("{}/{}   ·   ", app.page + 1, app.page_count())
@@ -141,10 +151,10 @@ fn draw_header(app: &App, frame: &mut Frame, area: Rect, now: Instant) {
         String::new()
     };
     let line = Line::from(vec![
-        Span::styled(page, Style::new().fg(DIM)),
+        Span::styled(page, Style::new().fg(theme::dim())),
         Span::styled(
             format!("{}    ", chrono::Local::now().format("%H:%M")),
-            Style::new().fg(DIM),
+            Style::new().fg(theme::dim()),
         ),
         Span::styled("● ", Style::new().fg(color)),
         Span::styled(indicator, Style::new().fg(color)),
@@ -160,7 +170,7 @@ fn draw_rule(frame: &mut Frame, area: Rect) {
     frame.render_widget(
         Paragraph::new(Span::styled(
             "─".repeat(area.width as usize),
-            Style::new().fg(BORDER),
+            Style::new().fg(theme::border()),
         )),
         area,
     );
@@ -233,9 +243,9 @@ fn feed_now_ms() -> i64 {
 fn feed_health(app: &App) -> (String, Color) {
     let label = app.activity.health_label(feed_now_ms());
     let color = match app.activity.health {
-        Health::Live => GOOD,
-        Health::Stale => WARN,
-        Health::Offline | Health::NotConnected | Health::Error => BAD,
+        Health::Live => theme::good(),
+        Health::Stale => theme::warn(),
+        Health::Offline | Health::NotConnected | Health::Error => theme::bad(),
     };
     (label, color)
 }
@@ -252,18 +262,25 @@ fn feed_glyph(entry: &Entry) -> (&'static str, Color) {
                 .as_ref()
                 .map_or("", |purchase| purchase.event.as_str());
             match event {
-                "renewal" => ("⟳", RETENTION),
-                "trial_conversion" => ("◐", TRIAL),
-                "revenue" => ("~", DIM),
-                _ => ("+", MONEY),
+                "renewal" => ("⟳", theme::retention()),
+                "trial_conversion" => ("◐", theme::trial()),
+                "revenue" => ("~", theme::dim()),
+                _ => ("+", theme::money()),
             }
         }
         EntryKind::Review => {
             let stars = entry.stars().unwrap_or(0);
-            ("★", if stars <= 2 { BAD } else { WARN })
+            (
+                "★",
+                if stars <= 2 {
+                    theme::bad()
+                } else {
+                    theme::warn()
+                },
+            )
         }
-        EntryKind::Rating => ("☆", WARN),
-        EntryKind::Unknown => ("·", DIM),
+        EntryKind::Rating => ("☆", theme::warn()),
+        EntryKind::Unknown => ("·", theme::dim()),
     }
 }
 
@@ -276,42 +293,60 @@ fn feed_value(entry: &Entry) -> (String, Color) {
     match entry.kind() {
         EntryKind::Purchase => {
             let Some(purchase) = &entry.purchase else {
-                return ("—".to_string(), DIM);
+                return ("—".to_string(), theme::dim());
             };
             let text = format_metric(purchase.amount, "$", &purchase.currency);
             let prefix = if purchase.estimated { "~+" } else { "+" };
             (
                 format!("{prefix}{text}"),
-                if purchase.estimated { DIM } else { MONEY },
+                if purchase.estimated {
+                    theme::dim()
+                } else {
+                    theme::money()
+                },
             )
         }
         EntryKind::Review => {
             let stars = entry.stars().unwrap_or(0);
-            (feed_stars(stars), if stars <= 2 { BAD } else { WARN })
+            (
+                feed_stars(stars),
+                if stars <= 2 {
+                    theme::bad()
+                } else {
+                    theme::warn()
+                },
+            )
         }
         EntryKind::Rating => match entry.rating.as_ref() {
             Some(rating) => match rating.stars {
-                Some(stars) => (feed_stars(stars), if stars <= 2 { BAD } else { WARN }),
-                None => (format!("avg {:.1}", rating.average), DIM),
+                Some(stars) => (
+                    feed_stars(stars),
+                    if stars <= 2 {
+                        theme::bad()
+                    } else {
+                        theme::warn()
+                    },
+                ),
+                None => (format!("avg {:.1}", rating.average), theme::dim()),
             },
-            None => ("—".to_string(), DIM),
+            None => ("—".to_string(), theme::dim()),
         },
-        EntryKind::Unknown => ("—".to_string(), DIM),
+        EntryKind::Unknown => ("—".to_string(), theme::dim()),
     }
 }
 
 fn feed_accent(entry: &Entry) -> Color {
     match entry.kind() {
-        EntryKind::Purchase => MONEY,
+        EntryKind::Purchase => theme::money(),
         EntryKind::Review => {
             if entry.stars().unwrap_or(0) <= 2 {
-                BAD
+                theme::bad()
             } else {
-                WARN
+                theme::warn()
             }
         }
-        EntryKind::Rating => WARN,
-        EntryKind::Unknown => DIM,
+        EntryKind::Rating => theme::warn(),
+        EntryKind::Unknown => theme::dim(),
     }
 }
 
@@ -352,14 +387,11 @@ fn feed_subtitle(entry: &Entry) -> String {
             }
         }
         EntryKind::Rating => {
-            let rating = entry.rating.as_ref();
-            if rating.is_some_and(|rating| rating.summary) {
-                format!(
-                    "all-time ratings · {}",
-                    rating.map_or(0, |rating| rating.count)
-                )
+            let count = entry.rating.as_ref().map_or(0, |rating| rating.count);
+            if count > 1 {
+                format!("{count} new ratings · no written review")
             } else {
-                "new rating".to_string()
+                "new rating · no written review".to_string()
             }
         }
         EntryKind::Unknown => String::new(),
@@ -383,23 +415,13 @@ fn feed_meta(entry: &Entry, now_ms: i64) -> String {
             }
         }
         EntryKind::Review => parts.push("written review".to_string()),
-        EntryKind::Rating => {
-            if entry.rating.as_ref().is_some_and(|rating| rating.summary) {
-                parts.push("rating history".to_string());
-            } else {
-                parts.push("rating only".to_string());
-            }
-        }
+        EntryKind::Rating => parts.push("rating only".to_string()),
         EntryKind::Unknown => {}
     }
     if !entry.country.is_empty() {
         parts.push(entry.country.clone());
     }
-    if entry.rating.as_ref().is_some_and(|rating| rating.summary) {
-        parts.push("all-time".to_string());
-    } else {
-        parts.push(age_label(now_ms, entry.timestamp()));
-    }
+    parts.push(age_label(now_ms, entry.timestamp()));
     parts.join("  ·  ")
 }
 
@@ -514,14 +536,18 @@ struct FeedCard {
 }
 
 fn make_feed_card(entry: &Entry, width: u16, selected: bool) -> FeedCard {
-    let background = if selected { SELECTION } else { SURFACE };
+    let background = if selected {
+        theme::selection()
+    } else {
+        theme::surface()
+    };
     let accent = feed_accent(entry);
     let inner_width = width.saturating_sub(4) as usize;
     if inner_width < 8 {
         return FeedCard {
             lines: vec![Line::from(Span::styled(
                 entry.app.clone(),
-                Style::new().fg(TEXT).bg(background),
+                Style::new().fg(theme::text()).bg(background),
             ))],
             height: 1,
             accent,
@@ -545,7 +571,10 @@ fn make_feed_card(entry: &Entry, width: u16, selected: bool) -> FeedCard {
         } else {
             " ".repeat(lead_width)
         };
-        let mut spans = vec![Span::styled(prefix, Style::new().fg(DIM).bg(background))];
+        let mut spans = vec![Span::styled(
+            prefix,
+            Style::new().fg(theme::dim()).bg(background),
+        )];
         if index == 0 {
             let (glyph, glyph_color) = feed_glyph(entry);
             spans.push(Span::styled(
@@ -556,7 +585,11 @@ fn make_feed_card(entry: &Entry, width: u16, selected: bool) -> FeedCard {
         spans.push(Span::styled(
             part.clone(),
             Style::new()
-                .fg(if selected { BRIGHT } else { TEXT })
+                .fg(if selected {
+                    theme::bright()
+                } else {
+                    theme::text()
+                })
                 .bg(background),
         ));
         let padding = title_width.saturating_sub(text_width(part));
@@ -582,7 +615,7 @@ fn make_feed_card(entry: &Entry, width: u16, selected: bool) -> FeedCard {
     for part in wrap_text(&subtitle, subtitle_width) {
         lines.push(Line::from(vec![
             Span::styled(" ".repeat(lead_width), Style::new().bg(background)),
-            Span::styled(part, Style::new().fg(TEXT).bg(background)),
+            Span::styled(part, Style::new().fg(theme::text()).bg(background)),
         ]));
     }
     let meta = feed_meta(entry, feed_now_ms());
@@ -593,7 +626,7 @@ fn make_feed_card(entry: &Entry, width: u16, selected: bool) -> FeedCard {
     for (index, part) in meta_lines.iter().enumerate() {
         let mut spans = vec![
             Span::styled(" ".repeat(lead_width), Style::new().bg(background)),
-            Span::styled(part.clone(), Style::new().fg(DIM).bg(background)),
+            Span::styled(part.clone(), Style::new().fg(theme::dim()).bg(background)),
         ];
         if index == 0 && reserve == 0 {
             let padding = meta_width.saturating_sub(text_width(part));
@@ -663,12 +696,12 @@ fn draw_day_header(
     };
     let mut spans = vec![Span::styled(
         text.clone(),
-        Style::new().fg(DIM).add_modifier(Modifier::BOLD),
+        Style::new().fg(theme::dim()).add_modifier(Modifier::BOLD),
     )];
     let remaining = area.width.saturating_sub(text_width(&text) as u16 + 2) as usize;
     spans.push(Span::styled(
         format!("  {}", "─".repeat(remaining)),
-        Style::new().fg(BORDER),
+        Style::new().fg(theme::border()),
     ));
     frame.render_widget(
         Paragraph::new(Line::from(spans)),
@@ -704,8 +737,8 @@ fn draw_pulse(frame: &mut Frame, area: Rect, entries: &[&Entry], now_ms: i64) {
     let bottom = area.y + 1;
     for (index, (money, reviews)) in bins.iter().enumerate() {
         let x = area.x + (index * bin_width) as u16;
-        let style_money = Style::new().fg(MONEY);
-        let style_reviews = Style::new().fg(WARN);
+        let style_money = Style::new().fg(theme::money());
+        let style_reviews = Style::new().fg(theme::warn());
         if *reviews > 0 {
             for offset in 0..bin_width.min(2) {
                 frame
@@ -723,7 +756,7 @@ fn draw_pulse(frame: &mut Frame, area: Rect, entries: &[&Entry], now_ms: i64) {
         if *money == 0 && *reviews == 0 {
             frame
                 .buffer_mut()
-                .set_string(x, bottom, "·", Style::new().fg(BORDER));
+                .set_string(x, bottom, "·", Style::new().fg(theme::border()));
         }
     }
 }
@@ -747,7 +780,10 @@ fn draw_activity_ticker(app: &App, frame: &mut Frame, area: Rect, now: Instant) 
     let entries = app.activity_entries_all(Range::D7);
     let (health, health_color) = feed_health(app);
     let unread = app.activity_unread();
-    frame.render_widget(Block::default().style(Style::new().bg(SURFACE)), area);
+    frame.render_widget(
+        Block::default().style(Style::new().bg(theme::surface())),
+        area,
+    );
     if area.height == 0 {
         return;
     }
@@ -758,27 +794,33 @@ fn draw_activity_ticker(app: &App, frame: &mut Frame, area: Rect, now: Instant) 
         let mut first = vec![
             Span::styled(
                 if unread > 0 { "● " } else { "· " },
-                Style::new().fg(if unread > 0 { MONEY } else { DIM }),
+                Style::new().fg(if unread > 0 {
+                    theme::money()
+                } else {
+                    theme::dim()
+                }),
             ),
-            Span::styled(format!("{}  ", feed_stamp(entry)), Style::new().fg(DIM)),
+            Span::styled(
+                format!("{}  ", feed_stamp(entry)),
+                Style::new().fg(theme::dim()),
+            ),
         ];
         let (glyph, glyph_color) = feed_glyph(entry);
         first.push(Span::styled(
             format!("{glyph}  "),
             Style::new().fg(glyph_color),
         ));
-        first.push(Span::styled(entry.app.clone(), Style::new().fg(TEXT)));
+        first.push(Span::styled(
+            entry.app.clone(),
+            Style::new().fg(theme::text()),
+        ));
         first.push(Span::styled(
             format!("  {value}"),
             Style::new().fg(value_color),
         ));
         lines.push(Line::from(first));
         if area.height > 1 {
-            let rating_total: i64 = app
-                .activity_ratings()
-                .iter()
-                .map(|entry| entry.rating.as_ref().map_or(0, |rating| rating.count))
-                .sum();
+            let rating_total = app.activity_rating_total();
             let suffix = if rating_total > 0 {
                 format!("   {health}  ·  {rating_total} ratings  ·  f ACTIVITY")
             } else {
@@ -787,7 +829,7 @@ fn draw_activity_ticker(app: &App, frame: &mut Frame, area: Rect, now: Instant) 
             lines.push(Line::from(vec![
                 Span::styled(
                     format!("    {}  ·  {}", feed_subtitle(entry), entry.country),
-                    Style::new().fg(DIM),
+                    Style::new().fg(theme::dim()),
                 ),
                 Span::styled(suffix, Style::new().fg(health_color)),
             ]));
@@ -795,7 +837,7 @@ fn draw_activity_ticker(app: &App, frame: &mut Frame, area: Rect, now: Instant) 
     } else {
         lines.push(Line::from(Span::styled(
             "activity starts with the next sale or review",
-            Style::new().fg(DIM),
+            Style::new().fg(theme::dim()),
         )));
     }
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
@@ -811,7 +853,7 @@ fn draw_activity_shelf(app: &App, frame: &mut Frame, area: Rect, now: Instant) {
     frame.render_widget(
         Paragraph::new(Span::styled(
             "─".repeat(area.width as usize),
-            Style::new().fg(BORDER_STRONG),
+            Style::new().fg(theme::border_strong()),
         )),
         Rect {
             x: area.x,
@@ -821,7 +863,7 @@ fn draw_activity_shelf(app: &App, frame: &mut Frame, area: Rect, now: Instant) {
         },
     );
     frame.render_widget(
-        Block::default().style(Style::new().bg(SURFACE)),
+        Block::default().style(Style::new().bg(theme::surface())),
         Rect {
             x: area.x,
             y: area.y + 1,
@@ -843,41 +885,39 @@ fn draw_activity_shelf(app: &App, frame: &mut Frame, area: Rect, now: Instant) {
     let mut header = vec![
         Span::styled(
             "ACTIVITY",
-            Style::new().fg(BRIGHT).add_modifier(Modifier::BOLD),
+            Style::new()
+                .fg(theme::bright())
+                .add_modifier(Modifier::BOLD),
         ),
         Span::styled("   ", Style::new()),
     ];
     if unread > 0 {
-        header.push(Span::styled("● ", Style::new().fg(MONEY)));
+        header.push(Span::styled("● ", Style::new().fg(theme::money())));
         header.push(Span::styled(
             format!("{unread} NEW"),
-            Style::new().fg(MONEY),
+            Style::new().fg(theme::money()),
         ));
         header.push(Span::styled("   ", Style::new()));
     }
     header.push(Span::styled(health, Style::new().fg(health_color)));
-    let rating_total: i64 = app
-        .activity_ratings()
-        .iter()
-        .map(|entry| entry.rating.as_ref().map_or(0, |rating| rating.count))
-        .sum();
+    let rating_total = app.activity_rating_total();
     if rating_total > 0 {
         header.push(Span::styled(
             format!("   {rating_total} RATINGS"),
-            Style::new().fg(DIM),
+            Style::new().fg(theme::dim()),
         ));
     }
     if entries.len() > shown {
         header.push(Span::styled(
             format!("   +{} MORE", entries.len() - shown),
-            Style::new().fg(DIM),
+            Style::new().fg(theme::dim()),
         ));
     }
     frame.render_widget(Paragraph::new(Line::from(header)), header_area);
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
             "f FULL FEED",
-            Style::new().fg(DIM),
+            Style::new().fg(theme::dim()),
         )))
         .alignment(Alignment::Right),
         header_area,
@@ -906,9 +946,12 @@ fn draw_activity_shelf(app: &App, frame: &mut Frame, area: Rect, now: Instant) {
         );
         if index + 1 < columns {
             for y in card_top..card_top + card_height {
-                frame
-                    .buffer_mut()
-                    .set_string(x + card_width, y, " ", Style::new().bg(SURFACE));
+                frame.buffer_mut().set_string(
+                    x + card_width,
+                    y,
+                    " ",
+                    Style::new().bg(theme::surface()),
+                );
             }
         }
     }
@@ -934,7 +977,7 @@ fn draw_attention(
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 line,
-                Style::new().fg(BAD).add_modifier(Modifier::BOLD),
+                Style::new().fg(theme::bad()).add_modifier(Modifier::BOLD),
             ))),
             Rect {
                 x,
@@ -958,7 +1001,10 @@ fn draw_attention(
                 .take(2)
             {
                 frame.render_widget(
-                    Paragraph::new(Line::from(Span::styled(line, Style::new().fg(TEXT)))),
+                    Paragraph::new(Line::from(Span::styled(
+                        line,
+                        Style::new().fg(theme::text()),
+                    ))),
                     Rect {
                         x,
                         y: *y,
@@ -978,7 +1024,7 @@ fn draw_attention(
                     entry.country,
                     age_label(now_ms, entry.timestamp())
                 ),
-                Style::new().fg(DIM),
+                Style::new().fg(theme::dim()),
             ))),
             Rect {
                 x,
@@ -995,20 +1041,24 @@ fn draw_activity_rail(app: &App, frame: &mut Frame, area: Rect, now: Instant) {
     if area.height < 8 || area.width < 20 {
         return;
     }
-    frame.render_widget(Block::default().style(Style::new().bg(SURFACE)), area);
+    frame.render_widget(
+        Block::default().style(Style::new().bg(theme::surface())),
+        area,
+    );
     if area.x > 0 {
         for y in area.y..area.bottom() {
             frame.buffer_mut().set_string(
                 area.x - 1,
                 y,
                 "│",
-                Style::new().fg(BORDER_STRONG).bg(BG),
+                Style::new().fg(theme::border_strong()).bg(theme::bg()),
             );
         }
     }
     let entries = app.activity_entries_all(Range::D7);
     let (health, health_color) = feed_health(app);
     let unread = app.activity_unread();
+    let rating_total = app.activity_rating_total();
     let inner_x = area.x + 2;
     let inner_w = area.width.saturating_sub(4);
     let now_ms = feed_now_ms();
@@ -1016,19 +1066,28 @@ fn draw_activity_rail(app: &App, frame: &mut Frame, area: Rect, now: Instant) {
     let mut header = vec![
         Span::styled(
             "ACTIVITY",
-            Style::new().fg(BRIGHT).add_modifier(Modifier::BOLD),
+            Style::new()
+                .fg(theme::bright())
+                .add_modifier(Modifier::BOLD),
         ),
         Span::styled("  ", Style::new()),
     ];
     if unread > 0 {
-        header.push(Span::styled("● ", Style::new().fg(MONEY)));
+        header.push(Span::styled("● ", Style::new().fg(theme::money())));
         header.push(Span::styled(
             format!("{unread} NEW"),
-            Style::new().fg(MONEY),
+            Style::new().fg(theme::money()),
         ));
-        header.push(Span::styled("  ·  ", Style::new().fg(DIM)));
+        header.push(Span::styled("  ·  ", Style::new().fg(theme::dim())));
     }
     header.push(Span::styled(health.clone(), Style::new().fg(health_color)));
+    if rating_total > 0 {
+        header.push(Span::styled("  ·  ", Style::new().fg(theme::dim())));
+        header.push(Span::styled(
+            format!("{rating_total} RATINGS"),
+            Style::new().fg(theme::dim()),
+        ));
+    }
     frame.render_widget(
         Paragraph::new(Line::from(header)),
         Rect {
@@ -1039,7 +1098,7 @@ fn draw_activity_rail(app: &App, frame: &mut Frame, area: Rect, now: Instant) {
         },
     );
     frame.render_widget(
-        Paragraph::new(Line::from(Span::styled("f", Style::new().fg(DIM))))
+        Paragraph::new(Line::from(Span::styled("f", Style::new().fg(theme::dim()))))
             .alignment(Alignment::Right),
         Rect {
             x: inner_x,
@@ -1055,11 +1114,11 @@ fn draw_activity_rail(app: &App, frame: &mut Frame, area: Rect, now: Instant) {
         Paragraph::new(Line::from(vec![
             Span::styled(
                 "PULSE 24H",
-                Style::new().fg(DIM).add_modifier(Modifier::BOLD),
+                Style::new().fg(theme::dim()).add_modifier(Modifier::BOLD),
             ),
             Span::styled(
                 format!("   {}", pulse_summary(&pulse_entries)),
-                Style::new().fg(DIM),
+                Style::new().fg(theme::dim()),
             ),
         ])),
         Rect {
@@ -1085,7 +1144,7 @@ fn draw_activity_rail(app: &App, frame: &mut Frame, area: Rect, now: Instant) {
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
             "00        06        12        18        NOW",
-            Style::new().fg(DIM),
+            Style::new().fg(theme::dim()),
         ))),
         Rect {
             x: inner_x,
@@ -1098,7 +1157,7 @@ fn draw_activity_rail(app: &App, frame: &mut Frame, area: Rect, now: Instant) {
     frame.render_widget(
         Paragraph::new(Span::styled(
             "─".repeat(inner_w as usize),
-            Style::new().fg(BORDER),
+            Style::new().fg(theme::border()),
         )),
         Rect {
             x: inner_x,
@@ -1109,88 +1168,15 @@ fn draw_activity_rail(app: &App, frame: &mut Frame, area: Rect, now: Instant) {
     );
     y += 1;
 
-    let ratings = app.activity_ratings();
-    if !ratings.is_empty() {
-        let total: i64 = ratings
-            .iter()
-            .map(|entry| entry.rating.as_ref().map_or(0, |rating| rating.count))
-            .sum();
-        frame.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::styled(
-                    "RATINGS  ·  ALL-TIME",
-                    Style::new().fg(DIM).add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(format!("   {total}"), Style::new().fg(DIM)),
-            ])),
-            Rect {
-                x: inner_x,
-                y,
-                width: inner_w,
-                height: 1,
-            },
-        );
-        y += 1;
-        for entry in ratings.iter().take(3) {
-            let rating = entry.rating.as_ref();
-            let average = rating.map_or(0.0, |rating| rating.average);
-            let count = rating.map_or(0, |rating| rating.count);
-            let line = format!("☆ {average:.1}  {count:>2}  {}", entry.app);
-            for part in wrap_text(&line, inner_w as usize) {
-                if y >= area.bottom().saturating_sub(2) {
-                    break;
-                }
-                frame.render_widget(
-                    Paragraph::new(Line::from(Span::styled(part, Style::new().fg(TEXT)))),
-                    Rect {
-                        x: inner_x,
-                        y,
-                        width: inner_w,
-                        height: 1,
-                    },
-                );
-                y += 1;
-            }
-        }
-        if ratings.len() > 3 {
-            frame.render_widget(
-                Paragraph::new(Line::from(Span::styled(
-                    format!("+{} more apps", ratings.len() - 3),
-                    Style::new().fg(DIM),
-                ))),
-                Rect {
-                    x: inner_x,
-                    y,
-                    width: inner_w,
-                    height: 1,
-                },
-            );
-            y += 1;
-        }
-        frame.render_widget(
-            Paragraph::new(Span::styled(
-                "─".repeat(inner_w as usize),
-                Style::new().fg(BORDER),
-            )),
-            Rect {
-                x: inner_x,
-                y,
-                width: inner_w,
-                height: 1,
-            },
-        );
-        y += 1;
-    }
-
     let attention = app.activity_attention();
     if let Some(entry) = attention {
         frame.render_widget(
             Paragraph::new(Line::from(vec![
                 Span::styled(
                     "NEEDS ATTENTION",
-                    Style::new().fg(BAD).add_modifier(Modifier::BOLD),
+                    Style::new().fg(theme::bad()).add_modifier(Modifier::BOLD),
                 ),
-                Span::styled("   1", Style::new().fg(DIM)),
+                Span::styled("   1", Style::new().fg(theme::dim())),
             ])),
             Rect {
                 x: inner_x,
@@ -1205,7 +1191,7 @@ fn draw_activity_rail(app: &App, frame: &mut Frame, area: Rect, now: Instant) {
         frame.render_widget(
             Paragraph::new(Span::styled(
                 "─".repeat(inner_w as usize),
-                Style::new().fg(BORDER),
+                Style::new().fg(theme::border()),
             )),
             Rect {
                 x: inner_x,
@@ -1219,14 +1205,21 @@ fn draw_activity_rail(app: &App, frame: &mut Frame, area: Rect, now: Instant) {
 
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled("LATEST", Style::new().fg(DIM).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "LATEST",
+                Style::new().fg(theme::dim()).add_modifier(Modifier::BOLD),
+            ),
             Span::styled(
                 if unread > 0 {
                     format!("   {} NEW", unread)
                 } else {
                     "   UP TO DATE".to_string()
                 },
-                Style::new().fg(if unread > 0 { MONEY } else { DIM }),
+                Style::new().fg(if unread > 0 {
+                    theme::money()
+                } else {
+                    theme::dim()
+                }),
             ),
         ])),
         Rect {
@@ -1288,9 +1281,9 @@ fn draw_activity_rail(app: &App, frame: &mut Frame, area: Rect, now: Instant) {
     }
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled("storebot ", Style::new().fg(DIM)),
+            Span::styled("storebot ", Style::new().fg(theme::dim())),
             Span::styled(health, Style::new().fg(health_color)),
-            Span::styled("   f FULL FEED", Style::new().fg(DIM)),
+            Span::styled("   f FULL FEED", Style::new().fg(theme::dim())),
         ])),
         Rect {
             x: inner_x,
@@ -1322,10 +1315,10 @@ fn draw_summary(frame: &mut Frame, area: Rect, entries: &[&Entry], now_ms: i64, 
     let mut spans = vec![
         Span::styled(
             "PULSE 24H",
-            Style::new().fg(DIM).add_modifier(Modifier::BOLD),
+            Style::new().fg(theme::dim()).add_modifier(Modifier::BOLD),
         ),
         Span::styled("   ", Style::new()),
-        Span::styled(summary, Style::new().fg(TEXT)),
+        Span::styled(summary, Style::new().fg(theme::text())),
     ];
     let attention = entries
         .iter()
@@ -1334,13 +1327,13 @@ fn draw_summary(frame: &mut Frame, area: Rect, entries: &[&Entry], now_ms: i64, 
     if attention > 0 {
         spans.push(Span::styled(
             format!("    ·    {attention} needs attention"),
-            Style::new().fg(BAD),
+            Style::new().fg(theme::bad()),
         ));
     }
     if rating_total > 0 {
         spans.push(Span::styled(
             format!("    ·    {rating_total} all-time ratings"),
-            Style::new().fg(DIM),
+            Style::new().fg(theme::dim()),
         ));
     }
     frame.render_widget(
@@ -1362,7 +1355,7 @@ fn draw_summary(frame: &mut Frame, area: Rect, entries: &[&Entry], now_ms: i64, 
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 "00        06        12        18        NOW",
-                Style::new().fg(DIM),
+                Style::new().fg(theme::dim()),
             ))),
             Rect {
                 x: area.x,
@@ -1391,13 +1384,15 @@ fn draw_activity(app: &App, frame: &mut Frame, area: Rect, now: Instant) {
     let mut left = vec![
         Span::styled(
             " ACTIVITY",
-            Style::new().fg(BRIGHT).add_modifier(Modifier::BOLD),
+            Style::new()
+                .fg(theme::bright())
+                .add_modifier(Modifier::BOLD),
         ),
-        Span::styled("  ·  ", Style::new().fg(DIM)),
-        Span::styled(scope, Style::new().fg(TEXT)),
+        Span::styled("  ·  ", Style::new().fg(theme::dim())),
+        Span::styled(scope, Style::new().fg(theme::text())),
         Span::styled(
             format!("  ·  {} events", entries.len()),
-            Style::new().fg(DIM),
+            Style::new().fg(theme::dim()),
         ),
         Span::styled("   ● ", Style::new().fg(health_color)),
         Span::styled(health, Style::new().fg(health_color)),
@@ -1405,7 +1400,7 @@ fn draw_activity(app: &App, frame: &mut Frame, area: Rect, now: Instant) {
     if unread > 0 {
         left.push(Span::styled(
             format!("   {unread} NEW"),
-            Style::new().fg(MONEY),
+            Style::new().fg(theme::money()),
         ));
     }
     frame.render_widget(Paragraph::new(Line::from(left)), header);
@@ -1415,8 +1410,16 @@ fn draw_activity(app: &App, frame: &mut Frame, area: Rect, now: Instant) {
         right.push(Span::styled(
             format!(" {} ", range.label()),
             Style::new()
-                .fg(if active { BRIGHT } else { DIM })
-                .bg(if active { SURFACE } else { BG })
+                .fg(if active {
+                    theme::bright()
+                } else {
+                    theme::dim()
+                })
+                .bg(if active {
+                    theme::surface()
+                } else {
+                    theme::bg()
+                })
                 .add_modifier(if active {
                     Modifier::BOLD
                 } else {
@@ -1430,7 +1433,11 @@ fn draw_activity(app: &App, frame: &mut Frame, area: Rect, now: Instant) {
         right.push(Span::styled(
             format!(" {} ", filter.label()),
             Style::new()
-                .fg(if active { BRIGHT } else { DIM })
+                .fg(if active {
+                    theme::bright()
+                } else {
+                    theme::dim()
+                })
                 .add_modifier(if active {
                     Modifier::BOLD
                 } else {
@@ -1445,17 +1452,13 @@ fn draw_activity(app: &App, frame: &mut Frame, area: Rect, now: Instant) {
     frame.render_widget(
         Paragraph::new(Span::styled(
             "─".repeat(rule.width as usize),
-            Style::new().fg(BORDER_STRONG),
+            Style::new().fg(theme::border_strong()),
         )),
         rule,
     );
     if summary_height > 0 {
         let h24 = app.activity_entries_all(Range::H24);
-        let rating_total: i64 = app
-            .activity_ratings()
-            .iter()
-            .map(|entry| entry.rating.as_ref().map_or(0, |rating| rating.count))
-            .sum();
+        let rating_total = app.activity_rating_total();
         draw_summary(frame, summary, &h24, now_ms, rating_total);
     }
     let selected = app.activity.selected_index(&entries);
@@ -1467,7 +1470,10 @@ fn draw_activity(app: &App, frame: &mut Frame, area: Rect, now: Instant) {
         ])
         .areas(body);
         draw_activity_list(frame, list, &entries, selected, now_ms);
-        frame.render_widget(Block::default().style(Style::new().bg(SURFACE)), gap);
+        frame.render_widget(
+            Block::default().style(Style::new().bg(theme::surface())),
+            gap,
+        );
         draw_activity_detail(frame, detail_area, entries.get(selected).copied(), now_ms);
     } else if body.height >= 12 {
         let [list, gap, detail_area] = Layout::vertical([
@@ -1477,7 +1483,7 @@ fn draw_activity(app: &App, frame: &mut Frame, area: Rect, now: Instant) {
         ])
         .areas(body);
         draw_activity_list(frame, list, &entries, selected, now_ms);
-        frame.render_widget(Block::default().style(Style::new().bg(BG)), gap);
+        frame.render_widget(Block::default().style(Style::new().bg(theme::bg())), gap);
         draw_activity_detail(frame, detail_area, entries.get(selected).copied(), now_ms);
     } else {
         draw_activity_list(frame, body, &entries, selected, now_ms);
@@ -1508,7 +1514,7 @@ fn draw_activity_list(
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 "No activity in this range.",
-                Style::new().fg(DIM),
+                Style::new().fg(theme::dim()),
             ))),
             area,
         );
@@ -1521,7 +1527,7 @@ fn draw_activity_list(
                 area.right().saturating_sub(1),
                 y,
                 "│",
-                Style::new().fg(BORDER),
+                Style::new().fg(theme::border()),
             );
         }
     }
@@ -1588,7 +1594,7 @@ fn draw_activity_list(
                 area.right().saturating_sub(1),
                 y,
                 "│",
-                Style::new().fg(BORDER),
+                Style::new().fg(theme::border()),
             );
         }
         for y in 0..thumb {
@@ -1596,7 +1602,7 @@ fn draw_activity_list(
                 area.right().saturating_sub(1),
                 area.y + top + y,
                 "▐",
-                Style::new().fg(DIM),
+                Style::new().fg(theme::dim()),
             );
         }
     }
@@ -1618,14 +1624,17 @@ fn detail_field(lines: &mut Vec<Line<'static>>, label: &str, value: &str, width:
             " ".repeat(label_width)
         };
         lines.push(Line::from(vec![
-            Span::styled(prefix, Style::new().fg(DIM)),
-            Span::styled(part, Style::new().fg(TEXT)),
+            Span::styled(prefix, Style::new().fg(theme::dim())),
+            Span::styled(part, Style::new().fg(theme::text())),
         ]));
     }
 }
 
 fn draw_activity_detail(frame: &mut Frame, area: Rect, entry: Option<&Entry>, now_ms: i64) {
-    frame.render_widget(Block::default().style(Style::new().bg(SURFACE)), area);
+    frame.render_widget(
+        Block::default().style(Style::new().bg(theme::surface())),
+        area,
+    );
     if area.height == 0 || area.width == 0 {
         return;
     }
@@ -1635,7 +1644,7 @@ fn draw_activity_detail(frame: &mut Frame, area: Rect, entry: Option<&Entry>, no
                 area.x,
                 y,
                 "│",
-                Style::new().fg(BORDER_STRONG).bg(SURFACE),
+                Style::new().fg(theme::border_strong()).bg(theme::surface()),
             );
         }
     }
@@ -1643,7 +1652,7 @@ fn draw_activity_detail(frame: &mut Frame, area: Rect, entry: Option<&Entry>, no
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 "Select an activity item.",
-                Style::new().fg(DIM),
+                Style::new().fg(theme::dim()),
             ))),
             Rect {
                 x: area.x + 2,
@@ -1675,7 +1684,7 @@ fn draw_activity_detail(frame: &mut Frame, area: Rect, entry: Option<&Entry>, no
     };
     lines.push(Line::from(Span::styled(
         kind,
-        Style::new().fg(DIM).add_modifier(Modifier::BOLD),
+        Style::new().fg(theme::dim()).add_modifier(Modifier::BOLD),
     )));
     lines.push(Line::default());
     let (value, value_color) = feed_value(entry);
@@ -1697,10 +1706,17 @@ fn draw_activity_detail(frame: &mut Frame, area: Rect, entry: Option<&Entry>, no
                         &mut lines,
                         &purchase.product,
                         inner_width,
-                        Style::new().fg(BRIGHT).add_modifier(Modifier::BOLD),
+                        Style::new()
+                            .fg(theme::bright())
+                            .add_modifier(Modifier::BOLD),
                     );
                 }
-                draw_detail_line(&mut lines, &entry.app, inner_width, Style::new().fg(TEXT));
+                draw_detail_line(
+                    &mut lines,
+                    &entry.app,
+                    inner_width,
+                    Style::new().fg(theme::text()),
+                );
                 lines.push(Line::default());
                 detail_field(&mut lines, "EVENT", feed_event_label(entry), inner_width);
                 detail_field(&mut lines, "MARKET", &entry.country, inner_width);
@@ -1731,7 +1747,7 @@ fn draw_activity_detail(frame: &mut Frame, area: Rect, entry: Option<&Entry>, no
                         &mut lines,
                         &tags.join("  ·  "),
                         inner_width,
-                        Style::new().fg(WARN),
+                        Style::new().fg(theme::warn()),
                     );
                 }
                 if purchase.estimated {
@@ -1739,7 +1755,7 @@ fn draw_activity_detail(frame: &mut Frame, area: Rect, entry: Option<&Entry>, no
                         &mut lines,
                         "App-level delta; no per-sale detail.",
                         inner_width,
-                        Style::new().fg(DIM),
+                        Style::new().fg(theme::dim()),
                     );
                 }
             }
@@ -1753,7 +1769,9 @@ fn draw_activity_detail(frame: &mut Frame, area: Rect, entry: Option<&Entry>, no
                     &mut lines,
                     &format!("“{}”", review.title),
                     inner_width,
-                    Style::new().fg(BRIGHT).add_modifier(Modifier::BOLD),
+                    Style::new()
+                        .fg(theme::bright())
+                        .add_modifier(Modifier::BOLD),
                 );
             }
             lines.push(Line::default());
@@ -1780,13 +1798,23 @@ fn draw_activity_detail(frame: &mut Frame, area: Rect, entry: Option<&Entry>, no
             if !review.body.is_empty() {
                 lines.push(Line::default());
                 for paragraph in review.body.lines() {
-                    draw_detail_line(&mut lines, paragraph, inner_width, Style::new().fg(TEXT));
+                    draw_detail_line(
+                        &mut lines,
+                        paragraph,
+                        inner_width,
+                        Style::new().fg(theme::text()),
+                    );
                 }
             }
         }
         EntryKind::Rating => {
             if let Some(rating) = &entry.rating {
-                draw_detail_line(&mut lines, &entry.app, inner_width, Style::new().fg(TEXT));
+                draw_detail_line(
+                    &mut lines,
+                    &entry.app,
+                    inner_width,
+                    Style::new().fg(theme::text()),
+                );
                 lines.push(Line::default());
                 detail_field(
                     &mut lines,
@@ -1848,7 +1876,7 @@ fn blend_color(from: Color, to: Color, amount: f32) -> Color {
     let amount = amount.clamp(0.0, 1.0);
     let from = match from {
         Color::Rgb(red, green, blue) => (red, green, blue),
-        _ => match BG {
+        _ => match theme::bg() {
             Color::Rgb(red, green, blue) => (red, green, blue),
             _ => return to,
         },
@@ -1872,10 +1900,10 @@ fn blend_color(from: Color, to: Color, amount: f32) -> Color {
 
 fn celebration_color(tone: crate::activity::CelebrationTone) -> Color {
     match tone {
-        crate::activity::CelebrationTone::Money => MONEY,
-        crate::activity::CelebrationTone::Stars => WARN,
-        crate::activity::CelebrationTone::Alert => BAD,
-        crate::activity::CelebrationTone::Quiet => RETENTION,
+        crate::activity::CelebrationTone::Money => theme::money(),
+        crate::activity::CelebrationTone::Stars => theme::warn(),
+        crate::activity::CelebrationTone::Alert => theme::bad(),
+        crate::activity::CelebrationTone::Quiet => theme::retention(),
     }
 }
 
@@ -1923,7 +1951,7 @@ fn draw_celebration(
     };
     frame.render_widget(Clear, banner);
     frame.render_widget(
-        Block::default().style(Style::new().bg(blend_color(SURFACE, accent, 0.38))),
+        Block::default().style(Style::new().bg(blend_color(theme::surface(), accent, 0.38))),
         banner,
     );
     let (value, _) = feed_value(&celebration.entry);
@@ -1931,7 +1959,9 @@ fn draw_celebration(
         Span::styled(" ✦ ", Style::new().fg(accent).add_modifier(Modifier::BOLD)),
         Span::styled(
             celebration.headline,
-            Style::new().fg(BRIGHT).add_modifier(Modifier::BOLD),
+            Style::new()
+                .fg(theme::bright())
+                .add_modifier(Modifier::BOLD),
         ),
         Span::styled("   ", Style::new()),
         Span::styled(value, Style::new().fg(accent).add_modifier(Modifier::BOLD)),
@@ -1940,7 +1970,7 @@ fn draw_celebration(
         spans.push(Span::styled("   ", Style::new()));
         spans.push(Span::styled(
             celebration.entry.app.clone(),
-            Style::new().fg(TEXT),
+            Style::new().fg(theme::text()),
         ));
     }
     frame.render_widget(
@@ -1955,7 +1985,7 @@ fn draw_cards(app: &mut App, frame: &mut Frame, area: Rect, now: Instant) {
             Status::Error(failure) if !app.has_data() => error_lines(failure),
             _ => vec![Line::from(Span::styled(
                 "connecting to RevenueCat…",
-                Style::new().fg(DIM),
+                Style::new().fg(theme::dim()),
             ))],
         };
         let height = wrapped_height(&lines, area.width.saturating_sub(4)).min(area.height);
@@ -2077,15 +2107,22 @@ fn draw_card(
         Span::styled("● ", Style::new().fg(accent)),
         Span::styled(
             card.name.to_uppercase(),
-            Style::new().fg(DIM).add_modifier(Modifier::BOLD),
+            Style::new().fg(theme::dim()).add_modifier(Modifier::BOLD),
         ),
         Span::raw(" "),
     ]);
-    let border = if focused { BRIGHT } else { BORDER };
+    let border = if focused {
+        theme::bright()
+    } else {
+        theme::border()
+    };
     let block = Block::bordered()
         .border_style(Style::new().fg(border))
         .title(title);
     let inner = block.inner(area);
+    frame
+        .buffer_mut()
+        .set_style(area, Style::new().bg(theme::surface()));
     frame.render_widget(block, area);
     if inner.height == 0 || inner.width == 0 {
         return;
@@ -2120,22 +2157,28 @@ fn draw_card(
     if size != ValueSize::Compact
         && let Some(symbol) = money_symbol(card, currency)
     {
-        meta.push(Span::styled(format!("{symbol} "), Style::new().fg(DIM)));
+        meta.push(Span::styled(
+            format!("{symbol} "),
+            Style::new().fg(theme::dim()),
+        ));
     }
-    meta.push(Span::styled(card_period(card), Style::new().fg(DIM)));
+    meta.push(Span::styled(
+        card_period(card),
+        Style::new().fg(theme::dim()),
+    ));
     if partial {
-        meta.push(Span::styled("*", Style::new().fg(WARN)));
+        meta.push(Span::styled("*", Style::new().fg(theme::warn())));
     }
     if let Some(chip) = scoped_state.and_then(|state| match state {
-        RowState::Failed => Some(("failed · last known", BAD)),
-        RowState::Stale => Some(("stale", WARN)),
+        RowState::Failed => Some(("failed · last known", theme::bad())),
+        RowState::Stale => Some(("stale", theme::warn())),
         RowState::Live => None,
     }) {
-        meta.push(Span::styled("   ·   ", Style::new().fg(BORDER)));
+        meta.push(Span::styled("   ·   ", Style::new().fg(theme::border())));
         meta.push(Span::styled(chip.0, Style::new().fg(chip.1)));
     }
     if let Some(spans) = trend_spans(card, card.trend, currency, inner.width < 46) {
-        meta.push(Span::styled("   ·   ", Style::new().fg(BORDER)));
+        meta.push(Span::styled("   ·   ", Style::new().fg(theme::border())));
         meta.extend(spans);
     }
 
@@ -2151,7 +2194,7 @@ fn draw_card(
             for row in &rows {
                 lines.push(Line::from(Span::styled(
                     format!("  {row}"),
-                    Style::new().fg(BRIGHT),
+                    Style::new().fg(theme::bright()),
                 )));
             }
             if size == ValueSize::Big {
@@ -2165,7 +2208,9 @@ fn draw_card(
                 Span::raw("  "),
                 Span::styled(
                     format_metric(value, &card.unit, currency),
-                    Style::new().fg(BRIGHT).add_modifier(Modifier::BOLD),
+                    Style::new()
+                        .fg(theme::bright())
+                        .add_modifier(Modifier::BOLD),
                 ),
             ];
             frame.render_widget(
@@ -2197,7 +2242,7 @@ fn draw_card(
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 "  no chart data",
-                Style::new().fg(DIM),
+                Style::new().fg(theme::dim()),
             ))),
             chart,
         );
@@ -2231,13 +2276,13 @@ fn trend_spans(
     if trend.ratio.is_finite() && trend.ratio.abs() < 0.005 && trend.change.abs() < 0.5 {
         return Some(vec![Span::styled(
             if short { "flat" } else { "flat vs last week" },
-            Style::new().fg(DIM),
+            Style::new().fg(theme::dim()),
         )]);
     }
     let (arrow, color) = if trend.change >= 0.0 {
-        ("▲", GOOD)
+        ("▲", theme::good())
     } else {
-        ("▼", BAD)
+        ("▼", theme::bad())
     };
     let value = if !trend.ratio.is_finite() {
         match card.id.as_str() {
@@ -2256,7 +2301,7 @@ fn trend_spans(
         Style::new().fg(color),
     )];
     if !short {
-        spans.push(Span::styled(" vs last week", Style::new().fg(DIM)));
+        spans.push(Span::styled(" vs last week", Style::new().fg(theme::dim())));
     }
     Some(spans)
 }
@@ -2478,7 +2523,7 @@ fn draw_chart(
             let x = ((area.width as f64 - 1.0) * fraction).round() as u16;
             for y in area.top()..area.bottom() {
                 let cell = &mut frame.buffer_mut()[(area.x + x, y)];
-                cell.set_symbol("│").set_fg(shade(BORDER, 1.4));
+                cell.set_symbol("│").set_fg(shade(theme::border(), 1.4));
             }
         }
     }
@@ -2503,7 +2548,7 @@ fn draw_chart(
         for x in area.left()..area.right() {
             let cell = &mut frame.buffer_mut()[(x, y)];
             if cell.symbol() == " " {
-                cell.set_symbol("·").set_fg(DIM);
+                cell.set_symbol("·").set_fg(theme::dim());
             }
         }
     }
@@ -2572,7 +2617,7 @@ fn draw_footer(app: &App, frame: &mut Frame, area: Rect, now: Instant) {
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 " j/k move   Tab filter   [ ] range   f close   ? help",
-                Style::new().fg(DIM),
+                Style::new().fg(theme::dim()),
             ))),
             left,
         );
@@ -2594,7 +2639,7 @@ fn draw_footer(app: &App, frame: &mut Frame, area: Rect, now: Instant) {
                 " {}",
                 truncate(notice, area.width.saturating_sub(2) as usize)
             ),
-            Style::new().fg(WARN),
+            Style::new().fg(theme::warn()),
         ))
     } else if hints {
         let keys = if app.demo {
@@ -2602,7 +2647,7 @@ fn draw_footer(app: &App, frame: &mut Frame, area: Rect, now: Instant) {
         } else {
             " q quit   r refresh   p projects   f activity   Enter detail   ? help"
         };
-        Line::from(Span::styled(keys, Style::new().fg(DIM)))
+        Line::from(Span::styled(keys, Style::new().fg(theme::dim())))
     } else if app.stale(now) {
         Line::from(Span::styled(
             format!(
@@ -2610,7 +2655,7 @@ fn draw_footer(app: &App, frame: &mut Frame, area: Rect, now: Instant) {
                 app.last_updated
                     .map_or("never".to_string(), |then| ago(now, then))
             ),
-            Style::new().fg(WARN),
+            Style::new().fg(theme::warn()),
         ))
     } else if let Some((_, view)) = app.failed_views().into_iter().next() {
         let headline = view
@@ -2625,12 +2670,12 @@ fn draw_footer(app: &App, frame: &mut Frame, area: Rect, now: Instant) {
                 view.label,
                 truncate(&headline, 70)
             ),
-            Style::new().fg(WARN),
+            Style::new().fg(theme::warn()),
         ))
     } else if app.demo {
         Line::from(Span::styled(
             " demo data · no API calls",
-            Style::new().fg(DIM),
+            Style::new().fg(theme::dim()),
         ))
     } else {
         Line::default()
@@ -2650,7 +2695,7 @@ fn draw_footer(app: &App, frame: &mut Frame, area: Rect, now: Instant) {
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
             format!("{} ", parts.join("   ·   ")),
-            Style::new().fg(DIM),
+            Style::new().fg(theme::dim()),
         )))
         .alignment(Alignment::Right),
         right,
@@ -2663,7 +2708,7 @@ fn draw_wall_hint(app: &App, frame: &mut Frame, area: Rect, now: Instant) {
     }
     let line = Line::from(Span::styled(
         " p projects   r refresh   ? help",
-        Style::new().fg(DIM),
+        Style::new().fg(theme::dim()),
     ));
     frame.render_widget(
         Paragraph::new(line).alignment(Alignment::Right),
@@ -2693,12 +2738,14 @@ fn draw_picker(app: &App, frame: &mut Frame, area: Rect, now: Instant) {
     };
     frame.render_widget(Clear, rect);
     let block = Block::bordered()
-        .border_style(Style::new().fg(BORDER_STRONG))
-        .style(Style::new().bg(SURFACE))
+        .border_style(Style::new().fg(theme::border_strong()))
+        .style(Style::new().bg(theme::surface()))
         .title(Line::from(vec![
             Span::styled(
                 " Projects ",
-                Style::new().fg(BRIGHT).add_modifier(Modifier::BOLD),
+                Style::new()
+                    .fg(theme::bright())
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
                 if picker.query.trim().is_empty() {
@@ -2706,7 +2753,7 @@ fn draw_picker(app: &App, frame: &mut Frame, area: Rect, now: Instant) {
                 } else {
                     format!("{} / {total} ", entries.len())
                 },
-                Style::new().fg(DIM),
+                Style::new().fg(theme::dim()),
             ),
         ]));
     let inner = block.inner(rect);
@@ -2721,9 +2768,9 @@ fn draw_picker(app: &App, frame: &mut Frame, area: Rect, now: Instant) {
 
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled("  / ", Style::new().fg(DIM)),
-            Span::styled(picker.query.clone(), Style::new().fg(BRIGHT)),
-            Span::styled("▌", Style::new().fg(BRIGHT)),
+            Span::styled("  / ", Style::new().fg(theme::dim())),
+            Span::styled(picker.query.clone(), Style::new().fg(theme::bright())),
+            Span::styled("▌", Style::new().fg(theme::bright())),
         ])),
         query_area,
     );
@@ -2732,7 +2779,7 @@ fn draw_picker(app: &App, frame: &mut Frame, area: Rect, now: Instant) {
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 "  No projects match that filter.",
-                Style::new().fg(DIM),
+                Style::new().fg(theme::dim()),
             ))),
             list_area,
         );
@@ -2749,12 +2796,20 @@ fn draw_picker(app: &App, frame: &mut Frame, area: Rect, now: Instant) {
             height: 1,
         };
         let (dot, dot_color) = match entry.state {
-            RowState::Live => ("●", GOOD),
-            RowState::Stale => ("·", WARN),
-            RowState::Failed => ("!", BAD),
+            RowState::Live => ("●", theme::good()),
+            RowState::Stale => ("·", theme::warn()),
+            RowState::Failed => ("!", theme::bad()),
         };
-        let background = if selected { SELECTION } else { BG };
-        let foreground = if selected { BRIGHT } else { TEXT };
+        let background = if selected {
+            theme::selection()
+        } else {
+            theme::bg()
+        };
+        let foreground = if selected {
+            theme::bright()
+        } else {
+            theme::text()
+        };
         let line = Line::from(vec![
             Span::styled(
                 if selected { " ▶ " } else { "   " },
@@ -2772,7 +2827,7 @@ fn draw_picker(app: &App, frame: &mut Frame, area: Rect, now: Instant) {
             ),
             Span::styled(
                 format!(" {}", truncate(&entry.detail, 24)),
-                Style::new().fg(DIM).bg(background),
+                Style::new().fg(theme::dim()).bg(background),
             ),
         ]);
         frame.render_widget(Paragraph::new(line).style(Style::new().bg(background)), row);
@@ -2783,7 +2838,7 @@ fn draw_picker(app: &App, frame: &mut Frame, area: Rect, now: Instant) {
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 format!("  ↓ {hidden} more"),
-                Style::new().fg(DIM),
+                Style::new().fg(theme::dim()),
             ))),
             Rect {
                 y: list_area.bottom().saturating_sub(1),
@@ -2806,9 +2861,9 @@ fn draw_picker(app: &App, frame: &mut Frame, area: Rect, now: Instant) {
         Paragraph::new(Line::from(Span::styled(
             truncate(&help, inner.width as usize),
             Style::new().fg(if app.confirm_remove().is_some() {
-                BAD
+                theme::bad()
             } else {
-                DIM
+                theme::dim()
             }),
         ))),
         help_area,
@@ -2819,8 +2874,8 @@ fn draw_picker(app: &App, frame: &mut Frame, area: Rect, now: Instant) {
 fn accent_for_state(state: RowState) -> Color {
     match state {
         RowState::Live => accent(""),
-        RowState::Stale => WARN,
-        RowState::Failed => BAD,
+        RowState::Stale => theme::warn(),
+        RowState::Failed => theme::bad(),
     }
 }
 
@@ -2839,16 +2894,22 @@ fn draw_health(app: &App, frame: &mut Frame, area: Rect, now: Instant) {
     };
     frame.render_widget(Clear, rect);
     let block = Block::bordered()
-        .border_style(Style::new().fg(BORDER_STRONG))
-        .style(Style::new().bg(SURFACE))
+        .border_style(Style::new().fg(theme::border_strong()))
+        .style(Style::new().bg(theme::surface()))
         .title(Line::from(vec![
             Span::styled(
                 " Project health ",
-                Style::new().fg(BRIGHT).add_modifier(Modifier::BOLD),
+                Style::new()
+                    .fg(theme::bright())
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
                 format!("{}/{} live ", app.live_count(), app.project_count()),
-                Style::new().fg(if app.partial() { WARN } else { DIM }),
+                Style::new().fg(if app.partial() {
+                    theme::warn()
+                } else {
+                    theme::dim()
+                }),
             ),
         ]));
     let inner = block.inner(rect);
@@ -2860,11 +2921,15 @@ fn draw_health(app: &App, frame: &mut Frame, area: Rect, now: Instant) {
     let offset = selected.saturating_sub(visible.saturating_sub(1));
     for (index, row) in rows.iter().enumerate().skip(offset).take(visible) {
         let highlighted = index == selected;
-        let background = if highlighted { SELECTION } else { BG };
+        let background = if highlighted {
+            theme::selection()
+        } else {
+            theme::bg()
+        };
         let (dot, color) = match row.state {
-            RowState::Live => ("●", GOOD),
-            RowState::Stale => ("·", WARN),
-            RowState::Failed => ("!", BAD),
+            RowState::Live => ("●", theme::good()),
+            RowState::Stale => ("·", theme::warn()),
+            RowState::Failed => ("!", theme::bad()),
         };
         let detail = if let Some(failure) = &row.failure {
             format!(
@@ -2890,14 +2955,18 @@ fn draw_health(app: &App, frame: &mut Frame, area: Rect, now: Instant) {
             Span::styled(
                 format!("{:<28}", truncate(&row.label, 28)),
                 Style::new()
-                    .fg(BRIGHT)
+                    .fg(theme::bright())
                     .bg(background)
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
                 truncate(&detail, inner.width.saturating_sub(36) as usize),
                 Style::new()
-                    .fg(if row.failure.is_some() { BAD } else { DIM })
+                    .fg(if row.failure.is_some() {
+                        theme::bad()
+                    } else {
+                        theme::dim()
+                    })
                     .bg(background),
             ),
         ]);
@@ -2915,7 +2984,7 @@ fn draw_health(app: &App, frame: &mut Frame, area: Rect, now: Instant) {
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
             "  ↑/↓ move · r retry project · R retry all · Enter open · Esc close",
-            Style::new().fg(DIM),
+            Style::new().fg(theme::dim()),
         ))),
         help_area,
     );
@@ -2923,7 +2992,7 @@ fn draw_health(app: &App, frame: &mut Frame, area: Rect, now: Instant) {
 
 fn draw_help(frame: &mut Frame, area: Rect) {
     let width = area.width.saturating_sub(12).clamp(50, 100);
-    let height = 28.min(area.height.saturating_sub(4));
+    let height = 30.min(area.height.saturating_sub(4));
     let rect = Rect {
         x: area.x + (area.width.saturating_sub(width)) / 2,
         y: area.y + (area.height.saturating_sub(height)) / 2,
@@ -2932,14 +3001,16 @@ fn draw_help(frame: &mut Frame, area: Rect) {
     };
     frame.render_widget(Clear, rect);
     let block = Block::bordered()
-        .border_style(Style::new().fg(BORDER_STRONG))
-        .style(Style::new().bg(SURFACE))
+        .border_style(Style::new().fg(theme::border_strong()))
+        .style(Style::new().bg(theme::surface()))
         .title(Line::from(vec![
             Span::styled(
                 " rc-tui ",
-                Style::new().fg(BRIGHT).add_modifier(Modifier::BOLD),
+                Style::new()
+                    .fg(theme::bright())
+                    .add_modifier(Modifier::BOLD),
             ),
-            Span::styled("keys and data", Style::new().fg(DIM)),
+            Span::styled("keys and data", Style::new().fg(theme::dim())),
         ]));
     let inner = block.inner(rect);
     frame.render_widget(block, rect);
@@ -2953,6 +3024,7 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         key_line("Enter", "metric detail"),
         key_line("!", "project health"),
         key_line("w", "wall mode (no chrome)"),
+        key_line("T", "light / dark theme"),
         key_line("x", "export the current scope as CSV"),
         key_line("?", "this help"),
         key_line("+ / -", "UI scale: auto, 3, 2 or 1 cards per page"),
@@ -2969,20 +3041,22 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         key_line("f / Esc / q", "close activity"),
         key_line("j / k", "move selection"),
         key_line("Tab", "all / purchases / reviews"),
-        key_line("[ / ]", "24h / 7d / 28d"),
+        key_line("[ / ]", "24h / 7d / 28d / all"),
         key_line("g / G", "first / last"),
         Line::default(),
         dim_line("  Cards: RevenueCat overview values. Sparklines: 28 daily points."),
         dim_line("  Trends: last 7 days vs the previous 7. * marks a partial total."),
-        dim_line("  UI scale, page, wall, pins and the last project persist in config.toml."),
+        dim_line(
+            "  UI scale, page, theme, wall, pins and the last project persist in config.toml.",
+        ),
     ];
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
 }
 
 fn key_line(key: &str, description: &str) -> Line<'static> {
     Line::from(vec![
-        Span::styled(format!("    {key:<20}"), Style::new().fg(BRIGHT)),
-        Span::styled(description.to_string(), Style::new().fg(DIM)),
+        Span::styled(format!("    {key:<20}"), Style::new().fg(theme::bright())),
+        Span::styled(description.to_string(), Style::new().fg(theme::dim())),
     ])
 }
 
@@ -3011,20 +3085,27 @@ fn draw_detail(app: &App, frame: &mut Frame, area: Rect, now: Instant) {
     .areas(area);
 
     let mut header_spans = vec![
-        Span::styled("← ", Style::new().fg(DIM)),
+        Span::styled("← ", Style::new().fg(theme::dim())),
         Span::styled(
             card.name.to_uppercase(),
-            Style::new().fg(BRIGHT).add_modifier(Modifier::BOLD),
+            Style::new()
+                .fg(theme::bright())
+                .add_modifier(Modifier::BOLD),
         ),
         Span::styled("    ", Style::new()),
         Span::styled(
             format_metric(card.value.value(now), &card.unit, &app.currency),
-            Style::new().fg(BRIGHT).add_modifier(Modifier::BOLD),
+            Style::new()
+                .fg(theme::bright())
+                .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(format!("   {}", card_period(card)), Style::new().fg(DIM)),
+        Span::styled(
+            format!("   {}", card_period(card)),
+            Style::new().fg(theme::dim()),
+        ),
     ];
     if let Some(spans) = trend_spans(card, card.trend, &app.currency, false) {
-        header_spans.push(Span::styled("   ·   ", Style::new().fg(BORDER)));
+        header_spans.push(Span::styled("   ·   ", Style::new().fg(theme::border())));
         header_spans.extend(spans);
     }
     let window_line = Line::from(
@@ -3036,8 +3117,12 @@ fn draw_detail(app: &App, frame: &mut Frame, area: Rect, now: Instant) {
                     Span::styled(
                         format!(" {}d ", window.days()),
                         Style::new()
-                            .fg(if active { BG } else { DIM })
-                            .bg(if active { accent(&card.id) } else { BG }),
+                            .fg(if active { theme::bg() } else { theme::dim() })
+                            .bg(if active {
+                                accent(&card.id)
+                            } else {
+                                theme::bg()
+                            }),
                     ),
                     Span::raw(" "),
                 ]
@@ -3066,7 +3151,11 @@ fn draw_detail(app: &App, frame: &mut Frame, area: Rect, now: Instant) {
             } else {
                 "no chart data for this window".to_string()
             },
-            Style::new().fg(if detail.error.is_some() { BAD } else { DIM }),
+            Style::new().fg(if detail.error.is_some() {
+                theme::bad()
+            } else {
+                theme::dim()
+            }),
         ))
     } else {
         let min = values.iter().copied().fold(f64::INFINITY, f64::min);
@@ -3075,7 +3164,7 @@ fn draw_detail(app: &App, frame: &mut Frame, area: Rect, now: Instant) {
         Line::from(vec![
             Span::styled(
                 format!("{}   ·   ", detail.window.label()),
-                Style::new().fg(DIM),
+                Style::new().fg(theme::dim()),
             ),
             Span::styled(
                 format!(
@@ -3084,7 +3173,7 @@ fn draw_detail(app: &App, frame: &mut Frame, area: Rect, now: Instant) {
                     format_metric(max, &card.unit, &app.currency),
                     format_metric(avg, &card.unit, &app.currency)
                 ),
-                Style::new().fg(DIM),
+                Style::new().fg(theme::dim()),
             ),
         ])
     };
@@ -3092,7 +3181,7 @@ fn draw_detail(app: &App, frame: &mut Frame, area: Rect, now: Instant) {
     frame.render_widget(
         Paragraph::new(Span::styled(
             "─".repeat(area.width as usize),
-            Style::new().fg(BORDER),
+            Style::new().fg(theme::border()),
         )),
         rule,
     );
@@ -3115,7 +3204,7 @@ fn draw_detail(app: &App, frame: &mut Frame, area: Rect, now: Instant) {
                 } else {
                     "no chart data"
                 },
-                Style::new().fg(DIM),
+                Style::new().fg(theme::dim()),
             ))),
             center_block(chart_area, 1),
         );
@@ -3126,7 +3215,7 @@ fn draw_detail(app: &App, frame: &mut Frame, area: Rect, now: Instant) {
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 "no per-project data",
-                Style::new().fg(DIM),
+                Style::new().fg(theme::dim()),
             ))),
             table_area,
         );
@@ -3134,12 +3223,12 @@ fn draw_detail(app: &App, frame: &mut Frame, area: Rect, now: Instant) {
         let header = Line::from(vec![
             Span::styled(
                 format!("{:<32}", "PROJECT"),
-                Style::new().fg(DIM).add_modifier(Modifier::BOLD),
+                Style::new().fg(theme::dim()).add_modifier(Modifier::BOLD),
             ),
-            Span::styled(format!("{:>16}", "VALUE"), Style::new().fg(DIM)),
-            Span::styled(format!("{:>8}", "SHARE"), Style::new().fg(DIM)),
-            Span::styled(format!("{:>10}", "7D"), Style::new().fg(DIM)),
-            Span::styled(format!("  {:<8}", "STATE"), Style::new().fg(DIM)),
+            Span::styled(format!("{:>16}", "VALUE"), Style::new().fg(theme::dim())),
+            Span::styled(format!("{:>8}", "SHARE"), Style::new().fg(theme::dim())),
+            Span::styled(format!("{:>10}", "7D"), Style::new().fg(theme::dim())),
+            Span::styled(format!("  {:<8}", "STATE"), Style::new().fg(theme::dim())),
         ]);
         frame.render_widget(Paragraph::new(header), table_area);
         let visible = table_area.height.saturating_sub(1) as usize;
@@ -3147,28 +3236,32 @@ fn draw_detail(app: &App, frame: &mut Frame, area: Rect, now: Instant) {
         let offset = selected.saturating_sub(visible.saturating_sub(1));
         for (index, row) in rows.iter().enumerate().skip(offset).take(visible) {
             let highlighted = index == selected;
-            let background = if highlighted { SELECTION } else { BG };
+            let background = if highlighted {
+                theme::selection()
+            } else {
+                theme::bg()
+            };
             let (trend, color) = detail_trend(row.trend);
             let state = match row.state {
-                RowState::Live => ("live", GOOD),
-                RowState::Stale => ("stale", WARN),
-                RowState::Failed => ("failed", BAD),
+                RowState::Live => ("live", theme::good()),
+                RowState::Stale => ("stale", theme::warn()),
+                RowState::Failed => ("failed", theme::bad()),
             };
             let line = Line::from(vec![
                 Span::styled(
                     format!("{:<32}", truncate(&row.label, 32)),
-                    Style::new().fg(BRIGHT).bg(background),
+                    Style::new().fg(theme::bright()).bg(background),
                 ),
                 Span::styled(
                     format!(
                         "{:>16}",
                         format_metric(row.value, &card.unit, &app.currency)
                     ),
-                    Style::new().fg(TEXT).bg(background),
+                    Style::new().fg(theme::text()).bg(background),
                 ),
                 Span::styled(
                     format!("{:>8}", format!("{:.0}%", row.share * 100.0)),
-                    Style::new().fg(DIM).bg(background),
+                    Style::new().fg(theme::dim()).bg(background),
                 ),
                 Span::styled(
                     format!("{trend:>10}"),
@@ -3194,7 +3287,7 @@ fn draw_detail(app: &App, frame: &mut Frame, area: Rect, now: Instant) {
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
             "Esc back   ·   ↑/↓ metric   ·   t window   ·   j/k project   ·   Enter scope   ·   r refresh",
-            Style::new().fg(DIM),
+            Style::new().fg(theme::dim()),
         ))),
         footer,
     );
@@ -3202,18 +3295,22 @@ fn draw_detail(app: &App, frame: &mut Frame, area: Rect, now: Instant) {
 
 fn detail_trend(trend: Option<Trend>) -> (String, Color) {
     let Some(trend) = trend else {
-        return ("—".to_string(), DIM);
+        return ("—".to_string(), theme::dim());
     };
     if !trend.ratio.is_finite() {
-        return ("new".to_string(), GOOD);
+        return ("new".to_string(), theme::good());
     }
     if trend.ratio.abs() < 0.005 {
-        return ("flat".to_string(), DIM);
+        return ("flat".to_string(), theme::dim());
     }
     let arrow = if trend.change >= 0.0 { "▲" } else { "▼" };
     (
         format!("{arrow} {:.0}%", trend.ratio.abs() * 100.0),
-        if trend.change >= 0.0 { GOOD } else { BAD },
+        if trend.change >= 0.0 {
+            theme::good()
+        } else {
+            theme::bad()
+        },
     )
 }
 
@@ -3237,7 +3334,7 @@ fn draw_dates(frame: &mut Frame, area: Rect, points: usize) {
         let x = ((area.width as f64 - text.len() as f64) * (index as f64 / (points - 1) as f64))
             .round()
             .clamp(0.0, area.width as f64 - text.len() as f64) as u16;
-        buffer.set_string(area.x + x, area.y, &text, Style::new().fg(DIM));
+        buffer.set_string(area.x + x, area.y, &text, Style::new().fg(theme::dim()));
     }
 }
 
@@ -3334,17 +3431,18 @@ fn wrapped_height(lines: &[Line], width: u16) -> u16 {
 }
 
 pub fn draw_import(state: &Import, frame: &mut Frame) {
+    paint_background(frame);
     let now = Instant::now();
     let area = frame.area();
     let block = Block::bordered()
-        .border_style(Style::new().fg(BORDER))
-        .style(Style::new().bg(BG))
+        .border_style(Style::new().fg(theme::border()))
+        .style(Style::new().bg(theme::bg()))
         .title(Line::from(vec![
             Span::styled(
                 " rc-tui ",
-                Style::new().fg(TEXT).add_modifier(Modifier::BOLD),
+                Style::new().fg(theme::text()).add_modifier(Modifier::BOLD),
             ),
-            Span::styled("import projects", Style::new().fg(DIM)),
+            Span::styled("import projects", Style::new().fg(theme::dim())),
         ]));
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -3368,7 +3466,7 @@ pub fn draw_import(state: &Import, frame: &mut Frame) {
     if let Some(notice) = &state.notice {
         intro.push(Line::from(Span::styled(
             format!("  {notice}"),
-            Style::new().fg(WARN),
+            Style::new().fg(theme::warn()),
         )));
     }
     frame.render_widget(Paragraph::new(intro), intro_area);
@@ -3376,10 +3474,10 @@ pub fn draw_import(state: &Import, frame: &mut Frame) {
     let help = match state.stage {
         ImportStage::Editing => {
             let editor = Block::bordered()
-                .border_style(Style::new().fg(BORDER))
+                .border_style(Style::new().fg(theme::border()))
                 .title(Span::styled(
                     format!(" {} key(s) ", state.key_count()),
-                    Style::new().fg(DIM),
+                    Style::new().fg(theme::dim()),
                 ));
             let inner = editor.inner(body_area);
             frame.render_widget(editor, body_area);
@@ -3398,7 +3496,7 @@ pub fn draw_import(state: &Import, frame: &mut Frame) {
                         spinner(now),
                         state.key_count()
                     ),
-                    Style::new().fg(TEXT),
+                    Style::new().fg(theme::text()),
                 )),
                 Line::default(),
                 dim_line("  One overview request per key; chart data loads after you save."),
@@ -3412,28 +3510,31 @@ pub fn draw_import(state: &Import, frame: &mut Frame) {
             for outcome in state.results.iter().take(room) {
                 match (&outcome.project, &outcome.failure) {
                     (Some(project), _) => body.push(Line::from(vec![
-                        Span::styled("  ✓ ", Style::new().fg(GOOD)),
+                        Span::styled("  ✓ ", Style::new().fg(theme::good())),
                         Span::styled(
                             truncate(&outcome.label, 28),
-                            Style::new().fg(TEXT).add_modifier(Modifier::BOLD),
+                            Style::new().fg(theme::text()).add_modifier(Modifier::BOLD),
                         ),
-                        Span::styled(format!("  {}", project.id), Style::new().fg(DIM)),
-                        Span::styled("  metrics ✓ charts ✓", Style::new().fg(GOOD)),
+                        Span::styled(format!("  {}", project.id), Style::new().fg(theme::dim())),
+                        Span::styled("  metrics ✓ charts ✓", Style::new().fg(theme::good())),
                     ])),
                     (None, Some(failure)) => body.push(Line::from(vec![
-                        Span::styled("  ✗ ", Style::new().fg(BAD)),
+                        Span::styled("  ✗ ", Style::new().fg(theme::bad())),
                         Span::styled(
                             format!("{:<28} ", truncate(&outcome.label, 28)),
-                            Style::new().fg(TEXT),
+                            Style::new().fg(theme::text()),
                         ),
-                        Span::styled(truncate(&failure.headline(), 42), Style::new().fg(BAD)),
+                        Span::styled(
+                            truncate(&failure.headline(), 42),
+                            Style::new().fg(theme::bad()),
+                        ),
                         Span::styled(
                             match outcome.charts {
                                 Some(true) => "  metrics ✗",
                                 Some(false) => "  charts ✗",
                                 None => "",
                             },
-                            Style::new().fg(BAD),
+                            Style::new().fg(theme::bad()),
                         ),
                     ])),
                     (None, None) => {}
@@ -3446,7 +3547,11 @@ pub fn draw_import(state: &Import, frame: &mut Frame) {
                     state.ready(),
                     state.failures()
                 ),
-                Style::new().fg(if state.failures() == 0 { GOOD } else { WARN }),
+                Style::new().fg(if state.failures() == 0 {
+                    theme::good()
+                } else {
+                    theme::warn()
+                }),
             )));
             if state.failures() > 0 {
                 if let Some(failure) = state
@@ -3470,23 +3575,24 @@ pub fn draw_import(state: &Import, frame: &mut Frame) {
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
             format!(" {help}"),
-            Style::new().fg(DIM),
+            Style::new().fg(theme::dim()),
         ))),
         footer_area,
     );
 }
 
 pub fn draw_setup(setup: &Setup, frame: &mut Frame) {
+    paint_background(frame);
     let area = frame.area();
     let block = Block::bordered()
-        .border_style(Style::new().fg(BORDER))
-        .style(Style::new().bg(BG))
+        .border_style(Style::new().fg(theme::border()))
+        .style(Style::new().bg(theme::bg()))
         .title(Line::from(vec![
             Span::styled(
                 " rc-tui ",
-                Style::new().fg(TEXT).add_modifier(Modifier::BOLD),
+                Style::new().fg(theme::text()).add_modifier(Modifier::BOLD),
             ),
-            Span::styled("setup", Style::new().fg(DIM)),
+            Span::styled("setup", Style::new().fg(theme::dim())),
         ]));
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -3499,11 +3605,11 @@ pub fn draw_setup(setup: &Setup, frame: &mut Frame) {
                 Line::default(),
                 Line::from(Span::styled(
                     format!("  Listing projects for {} …", redact(&setup.api_key)),
-                    Style::new().fg(DIM),
+                    Style::new().fg(theme::dim()),
                 )),
                 Line::from(Span::styled(
                     "  This usually takes a second or two.",
-                    Style::new().fg(DIM),
+                    Style::new().fg(theme::dim()),
                 )),
                 Line::default(),
             ],
@@ -3514,9 +3620,9 @@ pub fn draw_setup(setup: &Setup, frame: &mut Frame) {
             for (index, project) in setup.projects.iter().enumerate() {
                 let selected = index == setup.selected;
                 let style = if selected {
-                    Style::new().fg(TEXT).add_modifier(Modifier::BOLD)
+                    Style::new().fg(theme::text()).add_modifier(Modifier::BOLD)
                 } else {
-                    Style::new().fg(DIM)
+                    Style::new().fg(theme::dim())
                 };
                 let marker = if selected { "▶" } else { "·" };
                 lines.push(Line::from(Span::styled(
@@ -3537,14 +3643,14 @@ pub fn draw_setup(setup: &Setup, frame: &mut Frame) {
                 Line::default(),
                 Line::from(Span::styled(
                     format!("  ✓ {label}  ({})", setup.project_id),
-                    Style::new().fg(GOOD).add_modifier(Modifier::BOLD),
+                    Style::new().fg(theme::good()).add_modifier(Modifier::BOLD),
                 )),
                 Line::default(),
                 dim_line("  Saved when you finish; keys stay in a mode-600 file on this machine."),
                 Line::default(),
                 Line::from(Span::styled(
                     "  Add another project?",
-                    Style::new().fg(TEXT).add_modifier(Modifier::BOLD),
+                    Style::new().fg(theme::text()).add_modifier(Modifier::BOLD),
                 )),
                 dim_line("  y = yes (paste the next key)   ·   n / Enter = finish"),
                 Line::default(),
@@ -3563,7 +3669,7 @@ pub fn draw_setup(setup: &Setup, frame: &mut Frame) {
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
             format!(" {help}"),
-            Style::new().fg(DIM),
+            Style::new().fg(theme::dim()),
         ))),
         help_area,
     );
@@ -3622,7 +3728,7 @@ fn setup_form(setup: &Setup) -> (Vec<Line<'static>>, &'static str) {
     if let Some(notice) = &setup.notice {
         lines.push(Line::from(Span::styled(
             format!("  {notice}"),
-            Style::new().fg(WARN),
+            Style::new().fg(theme::warn()),
         )));
         lines.push(Line::default());
     }
@@ -3643,24 +3749,27 @@ fn setup_form(setup: &Setup) -> (Vec<Line<'static>>, &'static str) {
 fn heading(text: &str) -> Line<'static> {
     Line::from(Span::styled(
         format!("  {text}"),
-        Style::new().fg(TEXT).add_modifier(Modifier::BOLD),
+        Style::new().fg(theme::text()).add_modifier(Modifier::BOLD),
     ))
 }
 
 fn dim_line(text: &str) -> Line<'static> {
-    Line::from(Span::styled(text.to_string(), Style::new().fg(DIM)))
+    Line::from(Span::styled(
+        text.to_string(),
+        Style::new().fg(theme::dim()),
+    ))
 }
 
 fn field_line(label: &str, value: &str, active: bool) -> Line<'static> {
     let label_style = if active {
-        Style::new().fg(TEXT).add_modifier(Modifier::BOLD)
+        Style::new().fg(theme::text()).add_modifier(Modifier::BOLD)
     } else {
-        Style::new().fg(DIM)
+        Style::new().fg(theme::dim())
     };
     let value_style = if active {
-        Style::new().fg(TEXT)
+        Style::new().fg(theme::text())
     } else {
-        Style::new().fg(DIM)
+        Style::new().fg(theme::dim())
     };
     Line::from(vec![
         Span::styled(format!("  {label:<11}"), label_style),
@@ -3694,24 +3803,26 @@ fn append_error(lines: &mut Vec<Line>, error: &Option<Failure>) {
 fn push_failure(lines: &mut Vec<Line>, failure: &Failure) {
     lines.push(Line::from(Span::styled(
         format!("  ✗ {}", failure.headline()),
-        Style::new().fg(BAD).add_modifier(Modifier::BOLD),
+        Style::new().fg(theme::bad()).add_modifier(Modifier::BOLD),
     )));
     if let Some(detail) = failure.detail() {
         lines.push(Line::from(Span::styled(
             format!("    {detail}"),
-            Style::new().fg(BAD),
+            Style::new().fg(theme::bad()),
         )));
     }
     for hint in failure.hints() {
         lines.push(Line::from(Span::styled(
             format!("    → {hint}"),
-            Style::new().fg(DIM),
+            Style::new().fg(theme::dim()),
         )));
     }
     if let Some(doc_url) = &failure.doc_url {
         lines.push(Line::from(Span::styled(
             format!("    docs: {doc_url}"),
-            Style::new().fg(DIM).add_modifier(Modifier::UNDERLINED),
+            Style::new()
+                .fg(theme::dim())
+                .add_modifier(Modifier::UNDERLINED),
         )));
     }
     lines.push(Line::default());
@@ -3839,6 +3950,50 @@ mod tests {
         assert!(full_text.contains("WRITTEN REVIEW"));
         assert!(full_text.contains("Finally an app that respects battery"));
         assert!(full_text.contains("storebot"));
+    }
+
+    #[test]
+    fn light_mode_paints_the_whole_dashboard() {
+        crate::theme::apply(crate::theme::Mode::Light);
+        let mut app = App::new(crate::app::AppOptions {
+            sources: vec![crate::app::Source::demo("One", "proj_demo_1")],
+            currency: "EUR".to_string(),
+            interval: Duration::from_secs(300),
+            chart_ttl: Duration::from_secs(900),
+            motion: crate::app::Motion::Off,
+            wall: false,
+            pins: Vec::new(),
+            ui_scale: 0,
+            ui_page: 0,
+            feed_path: None,
+            feed_seen_at: None,
+        });
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while app.cards.is_empty() && Instant::now() < deadline {
+            app.tick();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        let mut terminal = Terminal::new(TestBackend::new(200, 54)).unwrap();
+        terminal.draw(|frame| draw(&mut app, frame)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let light = crate::theme::palette();
+        assert!(
+            buffer.content().iter().any(|cell| cell.bg == light.surface),
+            "no light card surface was painted"
+        );
+        assert!(
+            buffer.content().iter().any(|cell| cell.fg == light.bright),
+            "no bright ink was painted"
+        );
+        assert!(
+            buffer
+                .content()
+                .iter()
+                .all(|cell| cell.bg != Color::Rgb(0x0b, 0x0d, 0x11)),
+            "a dark-theme background leaked into light mode"
+        );
+        crate::theme::apply(crate::theme::Mode::Dark);
     }
 
     #[test]

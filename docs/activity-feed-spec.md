@@ -272,8 +272,8 @@ Rating-specific:
 
 - `at` is the real event time. For a held stars-only rating, use the time the
   count increase was observed, not the release time. All-time rating totals use
-  `at = 0` and `summary: true`; rc-tui groups them under `ALL-TIME` and never
-  renders a clock for them.
+  `at = 0` and `summary: true`; rc-tui keeps them out of the stream and uses
+  them only for the all-time count in the rail header and full-view summary.
 - Feed retention: 500 entries and 90 days, whichever is smaller.
 - rc-tui's full view offers 24h, 7d, 28d and **all** ranges; **all** is the
   default in the full view because the feed is the permanent business log.
@@ -410,16 +410,19 @@ columns for context rather than empty gutter.
   A quiet hour is a one-cell baseline, not a blank. The total is shown at the
   right. This is the “horizontal space” payoff: a temporal shape that a
   one-line feed could not show.
-- **All-time ratings.** The rail shows the total rating count and the top three
-  apps by count, with average and count. This is deliberately separate from the
-  chronological stream: Apple exposes stars-only ratings only as aggregates, so
-  they have no honest event time and never appear as fake timestamps.
+- **Rating count.** The header carries one compact all-time total, for example
+  `46 RATINGS`. It is context, not a block: the stream below stays strictly
+  chronological. Apple exposes stars-only ratings only as aggregates, so new
+  ones appear as timed events only when storebot observes a count increase;
+  old totals never get a fake timestamp.
 - **Attention.** If there is an unseen 1–2★ written review in the last 7 days, pin
   the newest one here with stars, app, quote and territory. If none, omit the
   block entirely; the stream moves up. Never rotate or auto-dismiss it. The
   pinned review is omitted from the stream below so it appears exactly once;
   it also clears as soon as the full activity view has marked it read.
-- **Live stream.** Newest first, last **7 days**, with date separators. The
+- **Live stream.** Newest first, last **7 days**, with date separators. Ratings
+  join the stream as timed events when a new count is observed; the all-time
+  summary rows are filtered out. The
   pulse is deliberately the only 24-hour surface; the stream stays useful for
   low-volume apps whose last review was days ago. Every event is a compact card:
   - first line: time, glyph, full app title, right-aligned amount or stars;

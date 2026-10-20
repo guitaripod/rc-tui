@@ -41,7 +41,7 @@ rc-tui --check    # validate every saved project: metrics and charts
 
 ```text
 dashboard   q quit · r refresh · p projects · f activity · Enter detail · ? help
-            ! health · w wall · x export CSV · a add · i import · s setup
+            ! health · w wall · T light/dark · x export CSV · a add · i import · s setup
             ←→↑↓/Tab focus · + - UI scale · [ ] page
 picker      type to filter · ↑↓ · Enter open · Esc close
             Ctrl+F pin · Ctrl+E edit · Ctrl+D remove (twice)
@@ -57,18 +57,17 @@ writes a CSV to `~/.local/share/rc-tui/exports/`.
 
 `f` opens the activity feed; on wide terminals it is always visible in a rail
 beside the cards. It reads `~/.local/state/storebot/feed.json`, written by
-[storebot](https://github.com/guitaripod/storebot). The feed contains live sales,
-renewals, App Store purchases, every written review App Store Connect exposes,
-and an all-time rating total for each app that has ratings. The home rail shows
-the all-time total and the top apps; the full feed groups the totals under
-`ALL-TIME`. Each item is a card
-with a full title that wraps instead of truncating; first-ever sales, big sales,
-five-star reviews and reviews that need attention light the whole activity
-section. On first run it seeds 14 days of paid App Store sales, all available
-written reviews, all-time rating totals and the current two days of hook-log
-purchases; seed rows are marked as history and are never counted as new.
-Individual stars-only ratings are not exposed by Apple, so they are represented
-by the per-app total, not a fake per-rating event.
+[storebot](https://github.com/guitaripod/storebot). Every row is a timed event:
+live sales, renewals, App Store purchases, every written review App Store
+Connect exposes, and stars-only ratings when storebot observes a new one. The
+rail header keeps the all-time rating count as a single number; it is not a
+static block in the stream. Each item is a card with a full title that wraps
+instead of truncating; first-ever sales, big sales, five-star reviews and
+reviews that need attention light the whole activity section. On first run it
+seeds 14 days of paid App Store sales, all available written reviews and the
+current two days of hook-log purchases; seed rows are marked as history and are
+never counted as new. Apple does not expose individual stars-only ratings, so
+only new totals after storebot starts are definite events, not invented ones.
 
 rc-tui only reads the feed: it makes no extra RevenueCat, App Store or Telegram
 requests. Without storebot, the rail shows `NOT CONNECTED` and the metric
@@ -87,7 +86,9 @@ name = "MagicWeather"
 ```
 
 Optional keys: `ui_scale = 0..3` (0 auto, 1 = 3/page, 2 = 2/page, 3 = 1/page),
-`motion = "full" | "minimal" | "off"`, `wall = true`, `pins = ["proj..."]`,
+`motion = "full" | "minimal" | "off"`, `theme = "auto" | "light" | "dark"` (auto
+reads the terminal background and falls back to dark), `wall = true`,
+`pins = ["proj..."]`,
 `feed_path = "/path/to/feed.json"` (defaults to the storebot state path).
 `feed_seen_at` is the read cursor and is maintained automatically.
 

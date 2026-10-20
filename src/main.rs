@@ -93,6 +93,7 @@ fn main() -> color_eyre::Result<ExitCode> {
     }
 
     let saved = Config::load();
+    theme::init(saved.theme.as_deref());
     let currency = resolve_currency(args.currency.as_deref(), saved.currency.as_deref());
     let cli_project = cli_project(&args)?;
 
