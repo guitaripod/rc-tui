@@ -264,6 +264,9 @@ impl Entry {
     }
 
     pub fn timestamp(&self) -> i64 {
+        if self.is_history() {
+            return 0;
+        }
         if self.at > 0 {
             self.at
         } else {
@@ -616,7 +619,7 @@ fn sanitize_entry(mut entry: Entry) -> Option<Entry> {
     if entry.received_at == 0 {
         entry.received_at = entry.at;
     }
-    if entry.at == 0 {
+    if entry.at == 0 && !entry.is_history() {
         entry.at = entry.received_at;
     }
     if let Some(purchase) = &mut entry.purchase {

@@ -1076,6 +1076,26 @@ impl App {
         )
     }
 
+    pub fn activity_ratings(&self) -> Vec<&Entry> {
+        let scope_id = self.scope_id().map(str::to_string);
+        let label = self.scope_label();
+        let mut ratings: Vec<&Entry> = self
+            .activity
+            .entries
+            .iter()
+            .filter(|entry| entry.is_history())
+            .filter(|entry| entry.scope_matches(scope_id.as_deref(), &label))
+            .collect();
+        ratings.sort_by(|left, right| {
+            right
+                .rating
+                .as_ref()
+                .map_or(0, |rating| rating.count)
+                .cmp(&left.rating.as_ref().map_or(0, |rating| rating.count))
+        });
+        ratings
+    }
+
     pub fn activity_attention(&self) -> Option<&Entry> {
         let scope_id = self.scope_id().map(str::to_string);
         let label = self.scope_label();

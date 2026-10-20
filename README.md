@@ -59,7 +59,9 @@ writes a CSV to `~/.local/share/rc-tui/exports/`.
 beside the cards. It reads `~/.local/state/storebot/feed.json`, written by
 [storebot](https://github.com/guitaripod/storebot). The feed contains live sales,
 renewals, App Store purchases, every written review App Store Connect exposes,
-and an all-time rating total for each app that has ratings. Each item is a card
+and an all-time rating total for each app that has ratings. The home rail shows
+the all-time total and the top apps; the full feed groups the totals under
+`ALL-TIME`. Each item is a card
 with a full title that wraps instead of truncating; first-ever sales, big sales,
 five-star reviews and reviews that need attention light the whole activity
 section. On first run it seeds 14 days of paid App Store sales, all available

@@ -404,6 +404,9 @@ fn feed_meta(entry: &Entry, now_ms: i64) -> String {
 }
 
 fn feed_stamp(entry: &Entry) -> String {
+    if entry.is_history() {
+        return "ALL".to_string();
+    }
     entry.datetime().map_or_else(
         || "--:--".to_string(),
         |date| date.format("%H:%M").to_string(),
@@ -411,12 +414,18 @@ fn feed_stamp(entry: &Entry) -> String {
 }
 
 fn feed_day(entry: &Entry) -> String {
+    if entry.is_history() {
+        return "ALL-TIME".to_string();
+    }
     entry
         .datetime()
         .map_or_else(String::new, |date| date.date_naive().to_string())
 }
 
 fn feed_day_label(entry: &Entry, now_ms: i64) -> String {
+    if entry.is_history() {
+        return "ALL-TIME".to_string();
+    }
     let Some(date) = entry.datetime() else {
         return "UNKNOWN".to_string();
     };
@@ -765,15 +774,22 @@ fn draw_activity_ticker(app: &App, frame: &mut Frame, area: Rect, now: Instant) 
         ));
         lines.push(Line::from(first));
         if area.height > 1 {
+            let rating_total: i64 = app
+                .activity_ratings()
+                .iter()
+                .map(|entry| entry.rating.as_ref().map_or(0, |rating| rating.count))
+                .sum();
+            let suffix = if rating_total > 0 {
+                format!("   {health}  ·  {rating_total} ratings  ·  f ACTIVITY")
+            } else {
+                format!("   {health}  ·  f ACTIVITY")
+            };
             lines.push(Line::from(vec![
                 Span::styled(
                     format!("    {}  ·  {}", feed_subtitle(entry), entry.country),
                     Style::new().fg(DIM),
                 ),
-                Span::styled(
-                    format!("   {health}  ·  f ACTIVITY"),
-                    Style::new().fg(health_color),
-                ),
+                Span::styled(suffix, Style::new().fg(health_color)),
             ]));
         }
     } else {
@@ -840,6 +856,17 @@ fn draw_activity_shelf(app: &App, frame: &mut Frame, area: Rect, now: Instant) {
         header.push(Span::styled("   ", Style::new()));
     }
     header.push(Span::styled(health, Style::new().fg(health_color)));
+    let rating_total: i64 = app
+        .activity_ratings()
+        .iter()
+        .map(|entry| entry.rating.as_ref().map_or(0, |rating| rating.count))
+        .sum();
+    if rating_total > 0 {
+        header.push(Span::styled(
+            format!("   {rating_total} RATINGS"),
+            Style::new().fg(DIM),
+        ));
+    }
     if entries.len() > shown {
         header.push(Span::styled(
             format!("   +{} MORE", entries.len() - shown),
@@ -1082,6 +1109,79 @@ fn draw_activity_rail(app: &App, frame: &mut Frame, area: Rect, now: Instant) {
     );
     y += 1;
 
+    let ratings = app.activity_ratings();
+    if !ratings.is_empty() {
+        let total: i64 = ratings
+            .iter()
+            .map(|entry| entry.rating.as_ref().map_or(0, |rating| rating.count))
+            .sum();
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(
+                    "RATINGS  ·  ALL-TIME",
+                    Style::new().fg(DIM).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(format!("   {total}"), Style::new().fg(DIM)),
+            ])),
+            Rect {
+                x: inner_x,
+                y,
+                width: inner_w,
+                height: 1,
+            },
+        );
+        y += 1;
+        for entry in ratings.iter().take(3) {
+            let rating = entry.rating.as_ref();
+            let average = rating.map_or(0.0, |rating| rating.average);
+            let count = rating.map_or(0, |rating| rating.count);
+            let line = format!("☆ {average:.1}  {count:>2}  {}", entry.app);
+            for part in wrap_text(&line, inner_w as usize) {
+                if y >= area.bottom().saturating_sub(2) {
+                    break;
+                }
+                frame.render_widget(
+                    Paragraph::new(Line::from(Span::styled(part, Style::new().fg(TEXT)))),
+                    Rect {
+                        x: inner_x,
+                        y,
+                        width: inner_w,
+                        height: 1,
+                    },
+                );
+                y += 1;
+            }
+        }
+        if ratings.len() > 3 {
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    format!("+{} more apps", ratings.len() - 3),
+                    Style::new().fg(DIM),
+                ))),
+                Rect {
+                    x: inner_x,
+                    y,
+                    width: inner_w,
+                    height: 1,
+                },
+            );
+            y += 1;
+        }
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                "─".repeat(inner_w as usize),
+                Style::new().fg(BORDER),
+            )),
+            Rect {
+                x: inner_x,
+                y,
+                width: inner_w,
+                height: 1,
+            },
+        );
+        y += 1;
+    }
+
     let attention = app.activity_attention();
     if let Some(entry) = attention {
         frame.render_widget(
@@ -1204,7 +1304,7 @@ fn draw_activity_rail(app: &App, frame: &mut Frame, area: Rect, now: Instant) {
     }
 }
 
-fn draw_summary(frame: &mut Frame, area: Rect, entries: &[&Entry], now_ms: i64) {
+fn draw_summary(frame: &mut Frame, area: Rect, entries: &[&Entry], now_ms: i64, rating_total: i64) {
     if area.height < 2 {
         return;
     }
@@ -1235,6 +1335,12 @@ fn draw_summary(frame: &mut Frame, area: Rect, entries: &[&Entry], now_ms: i64) 
         spans.push(Span::styled(
             format!("    ·    {attention} needs attention"),
             Style::new().fg(BAD),
+        ));
+    }
+    if rating_total > 0 {
+        spans.push(Span::styled(
+            format!("    ·    {rating_total} all-time ratings"),
+            Style::new().fg(DIM),
         ));
     }
     frame.render_widget(
@@ -1345,7 +1451,12 @@ fn draw_activity(app: &App, frame: &mut Frame, area: Rect, now: Instant) {
     );
     if summary_height > 0 {
         let h24 = app.activity_entries_all(Range::H24);
-        draw_summary(frame, summary, &h24, now_ms);
+        let rating_total: i64 = app
+            .activity_ratings()
+            .iter()
+            .map(|entry| entry.rating.as_ref().map_or(0, |rating| rating.count))
+            .sum();
+        draw_summary(frame, summary, &h24, now_ms, rating_total);
     }
     let selected = app.activity.selected_index(&entries);
     if body.width >= 150 {
