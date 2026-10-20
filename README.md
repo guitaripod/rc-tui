@@ -8,6 +8,8 @@ all of them, with sparklines, a live purchase/review feed, a project picker,
 
 *`rc-tui --demo` — 17 mocked projects, no credentials. Click for full size.*
 
+[Five-state showcase](docs/showcase.png) — dashboard, full feed, celebration, shelf and ticker, at 3920×16010.
+
 ## Install
 
 ```sh
