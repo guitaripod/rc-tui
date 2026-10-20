@@ -46,7 +46,7 @@ dashboard   q quit · r refresh · p projects · f activity · Enter detail · ?
 picker      type to filter · ↑↓ · Enter open · Esc close
             Ctrl+F pin · Ctrl+E edit · Ctrl+D remove (twice)
 detail      Esc back · ↑↓ metric · t 7/28/90 days · j/k project · Enter scope
-activity    f/Esc/q close · j/k move · Tab filter · [ ] 24h/7d/28d · g/G ends
+activity    f/Esc/q close · j/k move · Tab filter · [ ] 24h/7d/28d/all · g/G ends
 ```
 
 `+`/`-` cycles the UI scale (auto, 3, 2 or 1 cards per page); `[`/`]` changes
@@ -58,12 +58,15 @@ writes a CSV to `~/.local/share/rc-tui/exports/`.
 `f` opens the activity feed; on wide terminals it is always visible in a rail
 beside the cards. It reads `~/.local/state/storebot/feed.json`, written by
 [storebot](https://github.com/guitaripod/storebot). The feed contains live sales,
-renewals, App Store purchases, written reviews and rating-only events. Each item
-is a card with a full title that wraps instead of truncating; first-ever sales,
-big sales, five-star reviews and reviews that need attention light the whole
-activity section. On first run it seeds 14 days of paid App Store sales, 28 days
-of written reviews and the current two days of hook-log purchases; seed rows are
-marked as history and are never counted as new.
+renewals, App Store purchases, every written review App Store Connect exposes,
+and an all-time rating total for each app that has ratings. Each item is a card
+with a full title that wraps instead of truncating; first-ever sales, big sales,
+five-star reviews and reviews that need attention light the whole activity
+section. On first run it seeds 14 days of paid App Store sales, all available
+written reviews, all-time rating totals and the current two days of hook-log
+purchases; seed rows are marked as history and are never counted as new.
+Individual stars-only ratings are not exposed by Apple, so they are represented
+by the per-app total, not a fake per-rating event.
 
 rc-tui only reads the feed: it makes no extra RevenueCat, App Store or Telegram
 requests. Without storebot, the rail shows `NOT CONNECTED` and the metric

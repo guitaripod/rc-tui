@@ -206,12 +206,12 @@ Rating-only:
 | `project_id` | string | RevenueCat project ID when known; empty otherwise. |
 | `app_id` | string | App Store `trackId` when known; empty for RC-only. |
 | `country` | string | ISO 3166-1 alpha-2, uppercase; empty when unknown. |
-| `source` | string | `revenuecat`, `app_store`, `app_store_sales`, `revenuecat_fallback`, `storebot_log`, `asc_reviews`, `itunes`. |
+| `source` | string | `revenuecat`, `app_store`, `app_store_sales`, `revenuecat_fallback`, `storebot_log`, `asc_reviews`, `itunes`, `itunes_history`. |
 | `text` | string | The exact Telegram line, sanitized for single-line display. |
 | `backfilled` | bool | Seeded history; never sent to Telegram. |
 | `purchase` | object | Present for purchases only. |
 | `review` | object | Present for written reviews only. |
-| `rating` | object | Present for stars-only ratings only. |
+| `rating` | object | Present for stars-only ratings and all-time rating summaries. |
 
 Purchase-specific:
 
@@ -242,8 +242,9 @@ Rating-specific:
 | Field | Type | Notes |
 |---|---|---|
 | `stars` | int 1–5 \| null | Inferred only when exactly one rating can be solved. |
-| `count` | int | Number of new ratings in this entry. |
+| `count` | int | New ratings, or all-time ratings for a summary. |
 | `average` | number | Storefront average at observation. |
+| `summary` | bool | True for one all-time total per app; omitted by live rating entries. |
 
 ### 3.5 Identity and dedupe
 
@@ -256,6 +257,7 @@ Rating-specific:
 | Revenue fallback | `sale:fallback:<project>:<day>:<value>` | same |
 | Written review | `review:<review_id>` | same |
 | Stars-only rating | `rating:<app_id>:<country>:<count>` | same |
+| All-time rating total | `rating-history:<app_id>` | same |
 
 - The sale key is the same one storebot uses to dedupe Telegram. There is one
   identity across RC, Apple and the feed.
@@ -269,13 +271,16 @@ Rating-specific:
 ### 3.6 Time and retention
 
 - `at` is the real event time. For a held stars-only rating, use the time the
-  count increase was observed, not the release time.
+  count increase was observed, not the release time. All-time rating totals are
+  written when the history is seeded and carry `summary: true`.
 - Feed retention: 500 entries and 90 days, whichever is smaller.
-- rc-tui's full view offers 24h, 7d and 28d ranges.
-- First install seeds **up to 28 days of written reviews and 14 days of paid
-  App Store sales rows** with `backfilled: true`. RevenueCat live purchases and
-  ratings continue from the install point; no fake history. App Store report
-  rows are aggregate product/country/day rows, not individual transactions.
+- rc-tui's full view offers 24h, 7d, 28d and **all** ranges; **all** is the
+  default in the full view because the feed is the permanent business log.
+- First install seeds **all available written reviews, one all-time rating
+  total per app, and 14 days of paid App Store sales rows** with
+  `backfilled: true`. RevenueCat live purchases and ratings continue from the
+  install point; no fake history. App Store report rows are aggregate
+  product/country/day rows, not individual transactions.
 
 ### 3.7 Producer normalization and first-run seed
 
@@ -285,15 +290,17 @@ Rating-specific:
   before they enter the feed. Newlines survive in `review.body`; `text` is
   single-line.
 - Review bodies are capped at 2,000 characters.
-- On first feed creation, storebot seeds up to 28 days of written reviews from
-  the next ASC review poll, plus 14 days of paid App Store sales rows from the
-  sales reports. It also bootstraps purchases from today's and yesterday's
-  storebot hook log, because App Store reports lag and a sale from an hour ago
-  must still appear. Log entries are filtered to known apps and deduplicated by
-  app/product/amount/country/day. Seeded entries have `backfilled: true` and
-  are never sent to Telegram. They are not counted as unread by rc-tui.
+- On first feed creation, storebot seeds every written review returned by the
+  ASC customerReviews endpoint, plus one all-time rating total per app from the
+  storefront counts. It also seeds 14 days of paid App Store sales rows and
+  bootstraps purchases from today's and yesterday's storebot hook log. Seeded
+  entries have `backfilled: true` and are never sent to Telegram. They are not
+  counted as unread by rc-tui.
+- Apple does not expose individual stars-only ratings through any public API.
+  The per-app all-time total is the honest representation; rc-tui must not
+  invent one event per star. Written reviews remain individual cards.
 - RevenueCat live purchases continue from the install point; App Store report
-  rows and the hook-log bootstrap fill the history before it. Ratings start live.
+  rows, review history and the hook-log bootstrap fill the history before it.
 - App Store daily sales become `purchase` entries with
   `source = "app_store_sales"`, `event = "purchase"`, and a stable row hash
   built from the report date, SKU/parent, title, country, quantity, proceeds and
@@ -574,12 +581,16 @@ Review:
 Rating:
 
 ```text
- RATING ONLY · ITUNES
- ★★★★☆
- 1 new rating · Germany · 3h ago
- Average 4.8 · inferred from the storefront count
+ RATING HISTORY · ITUNES_HISTORY
+ avg 4.7
+ Master of Flags: World Quiz
+ RATINGS   24
+ AVERAGE   4.7
+ SOURCE    itunes_history
 ```
 
+- Live stars-only ratings keep the `RATING ONLY` shape. The one-time all-time
+  total uses `RATING HISTORY` and is shown only in the **all** range.
 - If the star value could not be solved: no star row; show `New rating · avg
   4.8` instead.
 
@@ -588,7 +599,7 @@ Rating:
 | Key | Action |
 |---|---|
 | `Tab` | All → Purchases → Reviews (written + ratings) |
-| `[` / `]` | 24h → 7d → 28d (default **7d**) |
+| `[` / `]` | 24h → 7d → 28d → all (default **all**) |
 | `j` / `k` | Move selection |
 | `g` / `G` | First / last |
 | `PgUp` / `PgDn` | Page |
@@ -825,7 +836,7 @@ Full view:
 | `g`/`G` | First/last |
 | `PgUp`/`PgDn` | Page |
 | `Tab` | Cycle All/Purchases/Reviews |
-| `[`/`]` | Cycle 24h/7d/28d |
+| `[`/`]` | Cycle 24h/7d/28d/all |
 | `Enter` | Open detail modal on narrow layouts |
 | `?` | Help |
 
@@ -918,9 +929,10 @@ If step 4 fails, nothing is claimed, so the event can be retried.
   written-review bank used to subtract from future counts.
 - `feed.json` is written from the accepted event before Telegram delivery;
   `feed.alive` refreshes on the main loop without rewriting the full feed.
-- On first creation, storebot backfills 14 days of paid App Store rows, 28 days
-  of reviews, and the current two days of hook-log purchases. Existing feed
-  signatures prevent a live sale from being repeated by the historical report.
+- On first creation, storebot backfills 14 days of paid App Store rows, every
+  available written review, one all-time total per app, and the current two
+  days of hook-log purchases. Existing feed signatures prevent a live sale from
+  being repeated by the historical report.
 - `/off` mutes Telegram only; ingestion, dedupe and the feed continue. (This is
   a deliberate change: the feed is the business log, not a notification log.)
 - One `fcntl.flock` instance lock at startup.

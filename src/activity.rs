@@ -43,24 +43,27 @@ pub enum Range {
     H24,
     D7,
     D28,
+    All,
 }
 
 impl Range {
-    pub const ALL: [Self; 3] = [Self::H24, Self::D7, Self::D28];
+    pub const ALL: [Self; 4] = [Self::H24, Self::D7, Self::D28, Self::All];
 
     pub fn next(self) -> Self {
         match self {
             Self::H24 => Self::D7,
             Self::D7 => Self::D28,
-            Self::D28 => Self::H24,
+            Self::D28 => Self::All,
+            Self::All => Self::H24,
         }
     }
 
     pub fn previous(self) -> Self {
         match self {
-            Self::H24 => Self::D28,
+            Self::H24 => Self::All,
             Self::D7 => Self::H24,
             Self::D28 => Self::D7,
+            Self::All => Self::D28,
         }
     }
 
@@ -69,6 +72,7 @@ impl Range {
             Self::H24 => "24H",
             Self::D7 => "7D",
             Self::D28 => "28D",
+            Self::All => "ALL",
         }
     }
 
@@ -77,6 +81,7 @@ impl Range {
             Self::H24 => DAY_MS,
             Self::D7 => 7 * DAY_MS,
             Self::D28 => 28 * DAY_MS,
+            Self::All => i64::MAX / 4,
         }
     }
 }
@@ -224,6 +229,8 @@ pub struct Rating {
     pub count: i64,
     #[serde(default)]
     pub average: f64,
+    #[serde(default)]
+    pub summary: bool,
 }
 
 impl Entry {
@@ -242,6 +249,10 @@ impl Entry {
 
     pub fn is_review(&self) -> bool {
         matches!(self.kind(), EntryKind::Review | EntryKind::Rating)
+    }
+
+    pub fn is_history(&self) -> bool {
+        self.rating.as_ref().is_some_and(|rating| rating.summary)
     }
 
     pub fn stars(&self) -> Option<i64> {
@@ -322,7 +333,7 @@ impl Activity {
             last_heartbeat_ms: if demo { Some(now_ms) } else { None },
             seen_at: seen_at.unwrap_or(0),
             filter: Filter::All,
-            range: Range::D7,
+            range: Range::All,
             selected_id: None,
             open: false,
             error: None,
@@ -465,10 +476,15 @@ impl Activity {
         range: Range,
         now_ms: i64,
     ) -> Vec<&Entry> {
-        let cutoff = now_ms.saturating_sub(range.millis());
+        let cutoff = if range == Range::All {
+            i64::MIN
+        } else {
+            now_ms.saturating_sub(range.millis())
+        };
         self.entries
             .iter()
             .filter(|entry| entry.timestamp() >= cutoff)
+            .filter(|entry| range == Range::All || !entry.is_history())
             .filter(|entry| entry.scope_matches(scope_id, scope_label))
             .filter(|entry| match filter {
                 Filter::All => true,
@@ -836,6 +852,7 @@ fn demo_entries(now: i64) -> Vec<Entry> {
                 stars: Some(stars),
                 count: 1,
                 average: 4.9,
+                summary: false,
             }),
             ..Entry::default()
         }
@@ -1079,14 +1096,26 @@ mod tests {
         let mut item = entry("proj1", "One");
         item.at = now - 2 * DAY_MS;
         item.received_at = now;
+        let mut history = entry("proj1", "One");
+        history.id = "history".to_string();
+        history.kind = "rating".to_string();
+        history.purchase = None;
+        history.at = now;
+        history.received_at = now;
+        history.rating = Some(Rating {
+            count: 24,
+            average: 4.7,
+            summary: true,
+            ..Rating::default()
+        });
         let activity = Activity {
-            entries: vec![item],
+            entries: vec![item, history],
             path: PathBuf::new(),
             health: Health::Live,
             last_heartbeat_ms: Some(now),
             seen_at: 0,
             filter: Filter::All,
-            range: Range::D7,
+            range: Range::All,
             selected_id: None,
             open: false,
             error: None,
@@ -1110,5 +1139,12 @@ mod tests {
                 .len(),
             1
         );
+        assert_eq!(
+            activity
+                .entries_for(None, "All projects", Filter::All, Range::All, now)
+                .len(),
+            2
+        );
+        assert_eq!(Range::ALL.len(), 4);
     }
 }

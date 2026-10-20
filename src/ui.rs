@@ -351,7 +351,17 @@ fn feed_subtitle(entry: &Entry) -> String {
                 format!("“{}”", excerpt(body, 120))
             }
         }
-        EntryKind::Rating => "new rating".to_string(),
+        EntryKind::Rating => {
+            let rating = entry.rating.as_ref();
+            if rating.is_some_and(|rating| rating.summary) {
+                format!(
+                    "all-time ratings · {}",
+                    rating.map_or(0, |rating| rating.count)
+                )
+            } else {
+                "new rating".to_string()
+            }
+        }
         EntryKind::Unknown => String::new(),
     }
 }
@@ -373,13 +383,23 @@ fn feed_meta(entry: &Entry, now_ms: i64) -> String {
             }
         }
         EntryKind::Review => parts.push("written review".to_string()),
-        EntryKind::Rating => parts.push("rating only".to_string()),
+        EntryKind::Rating => {
+            if entry.rating.as_ref().is_some_and(|rating| rating.summary) {
+                parts.push("rating history".to_string());
+            } else {
+                parts.push("rating only".to_string());
+            }
+        }
         EntryKind::Unknown => {}
     }
     if !entry.country.is_empty() {
         parts.push(entry.country.clone());
     }
-    parts.push(age_label(now_ms, entry.timestamp()));
+    if entry.rating.as_ref().is_some_and(|rating| rating.summary) {
+        parts.push("all-time".to_string());
+    } else {
+        parts.push(age_label(now_ms, entry.timestamp()));
+    }
     parts.join("  ·  ")
 }
 
@@ -1533,7 +1553,13 @@ fn draw_activity_detail(frame: &mut Frame, area: Rect, entry: Option<&Entry>, no
     let kind = match entry.kind() {
         EntryKind::Purchase => format!("PURCHASE{source}"),
         EntryKind::Review => format!("WRITTEN REVIEW{source}"),
-        EntryKind::Rating => format!("RATING ONLY{source}"),
+        EntryKind::Rating => {
+            if entry.rating.as_ref().is_some_and(|rating| rating.summary) {
+                format!("RATING HISTORY{source}")
+            } else {
+                format!("RATING ONLY{source}")
+            }
+        }
         EntryKind::Unknown => format!("ACTIVITY{source}"),
     };
     lines.push(Line::from(Span::styled(
@@ -1663,13 +1689,25 @@ fn draw_activity_detail(frame: &mut Frame, area: Rect, entry: Option<&Entry>, no
                     &format!("{:.1}", rating.average),
                     inner_width,
                 );
-                detail_field(&mut lines, "MARKET", &entry.country, inner_width);
                 detail_field(
                     &mut lines,
-                    "RECEIVED",
-                    &age_label(now_ms, entry.timestamp()),
+                    "SOURCE",
+                    if entry.source.is_empty() {
+                        "itunes"
+                    } else {
+                        &entry.source
+                    },
                     inner_width,
                 );
+                if !rating.summary {
+                    detail_field(&mut lines, "MARKET", &entry.country, inner_width);
+                    detail_field(
+                        &mut lines,
+                        "RECEIVED",
+                        &age_label(now_ms, entry.timestamp()),
+                        inner_width,
+                    );
+                }
             }
         }
         EntryKind::Unknown => {}
