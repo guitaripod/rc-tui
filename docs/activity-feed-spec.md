@@ -200,7 +200,7 @@ Rating-only:
 | `project_id` | string | RevenueCat project ID when known; empty otherwise. |
 | `app_id` | string | App Store `trackId` when known; empty for RC-only. |
 | `country` | string | ISO 3166-1 alpha-2, uppercase; empty when unknown. |
-| `source` | string | `revenuecat`, `app_store`, `app_store_sales`, `revenuecat_fallback`, `asc_reviews`, `itunes`. |
+| `source` | string | `revenuecat`, `app_store`, `app_store_sales`, `revenuecat_fallback`, `storebot_log`, `asc_reviews`, `itunes`. |
 | `text` | string | The exact Telegram line, sanitized for single-line display. |
 | `backfilled` | bool | Seeded history; never sent to Telegram. |
 | `purchase` | object | Present for purchases only. |
@@ -266,10 +266,10 @@ Rating-specific:
   count increase was observed, not the release time.
 - Feed retention: 500 entries and 90 days, whichever is smaller.
 - rc-tui's full view offers 24h, 7d and 28d ranges.
-- First install seeds **up to 28 days of written reviews** with
-  `backfilled: true`. Purchases and ratings start live; no fake history. An
-  optional `storebot --backfill-feed 7d` can walk RevenueCat history later, but
-  it is never automatic.
+- First install seeds **up to 28 days of written reviews and 14 days of paid
+  App Store sales rows** with `backfilled: true`. RevenueCat live purchases and
+  ratings continue from the install point; no fake history. App Store report
+  rows are aggregate product/country/day rows, not individual transactions.
 
 ### 3.7 Producer normalization and first-run seed
 
@@ -280,9 +280,14 @@ Rating-specific:
   single-line.
 - Review bodies are capped at 2,000 characters.
 - On first feed creation, storebot seeds up to 28 days of written reviews from
-  the next ASC review poll. Seeded entries have `backfilled: true` and are
-  never sent to Telegram. They are not counted as unread by rc-tui.
-- Purchases and ratings are not backfilled in v1. They start live.
+  the next ASC review poll, plus 14 days of paid App Store sales rows from the
+  sales reports. It also bootstraps purchases from today's and yesterday's
+  storebot hook log, because App Store reports lag and a sale from an hour ago
+  must still appear. Log entries are filtered to known apps and deduplicated by
+  app/product/amount/country/day. Seeded entries have `backfilled: true` and
+  are never sent to Telegram. They are not counted as unread by rc-tui.
+- RevenueCat live purchases continue from the install point; App Store report
+  rows and the hook-log bootstrap fill the history before it. Ratings start live.
 - App Store daily sales become `purchase` entries with
   `source = "app_store_sales"`, `event = "purchase"`, and a stable row hash
   built from the report date, SKU/parent, title, country, quantity, proceeds and
@@ -898,6 +903,9 @@ If step 4 fails, nothing is claimed, so the event can be retried.
   written-review bank used to subtract from future counts.
 - `feed.json` is written from the accepted event before Telegram delivery;
   `feed.alive` refreshes on the main loop without rewriting the full feed.
+- On first creation, storebot backfills 14 days of paid App Store rows, 28 days
+  of reviews, and the current two days of hook-log purchases. Existing feed
+  signatures prevent a live sale from being repeated by the historical report.
 - `/off` mutes Telegram only; ingestion, dedupe and the feed continue. (This is
   a deliberate change: the feed is the business log, not a notification log.)
 - One `fcntl.flock` instance lock at startup.
@@ -1070,8 +1078,9 @@ RevenueCat  ALL PROJECTS  17 projects  EUR                      02:48  ● live
   same schema.
 - **No emoji in rows**; country codes and terminal glyphs. Telegram text is
   preserved in the detail.
-- **Purchases start live**; only written reviews are seeded for the first 28
-  days.
+- **Purchases before install** come from 14 days of App Store sales reports plus
+  the current two days of hook-log purchases; RevenueCat live purchases start at
+  install. Written reviews are seeded for 28 days.
 - **Stars-only ratings are held** for two review cycles plus five minutes.
 - **Wall mode hides activity**; detail and modal views hide it too.
 - **`f` is the only new dashboard key**; full-view keys are modal.
