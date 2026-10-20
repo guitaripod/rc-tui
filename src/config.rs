@@ -34,6 +34,12 @@ pub struct Config {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_project: Option<String>,
 
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub feed_path: Option<String>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub feed_seen_at: Option<i64>,
+
     #[serde(default)]
     pub projects: Vec<ProjectConfig>,
 
@@ -239,11 +245,15 @@ mod tests {
 
     #[test]
     fn parses_persisted_ui_state() {
-        let config =
-            Config::parse("ui_scale = 2\nui_page = 1\nlast_project = \"proj2\"\n").unwrap();
+        let config = Config::parse(
+            "ui_scale = 2\nui_page = 1\nlast_project = \"proj2\"\nfeed_seen_at = 1760900000000\nfeed_path = \"/tmp/feed.json\"\n",
+        )
+        .unwrap();
         assert_eq!(config.ui_scale, Some(2));
         assert_eq!(config.ui_page, Some(1));
         assert_eq!(config.last_project.as_deref(), Some("proj2"));
+        assert_eq!(config.feed_seen_at, Some(1760900000000));
+        assert_eq!(config.feed_path.as_deref(), Some("/tmp/feed.json"));
     }
 
     #[test]

@@ -2064,6 +2064,7 @@ dependencies = [
  "tachyonfx",
  "tokio",
  "toml",
+ "unicode-width",
 ]
 
 [[package]]

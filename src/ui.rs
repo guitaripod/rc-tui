@@ -7,14 +7,16 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
 
-use chrono::Days;
+use chrono::{Days, TimeZone};
 
+use crate::activity::{Entry, EntryKind, Filter, Health, Range};
 use crate::api::{DOCS_API_KEYS, Failure, SCOPE_CHARTS, SCOPE_OVERVIEW, SCOPE_PROJECTS, redact};
 use crate::app::{App, Card, RowState, Status, Trend, Window};
 use crate::import::{Import, Stage as ImportStage};
 use crate::setup::{Setup, Stage};
 use crate::theme::{
-    BAD, BG, BORDER, BORDER_STRONG, BRIGHT, DIM, GOOD, SELECTION, SURFACE, TEXT, WARN, shade,
+    BAD, BG, BORDER, BORDER_STRONG, BRIGHT, DIM, GOOD, MONEY, RETENTION, SELECTION, SURFACE, TEXT,
+    TRIAL, WARN, shade,
 };
 
 pub use crate::theme::accent;
@@ -50,7 +52,7 @@ fn draw_dashboard(app: &mut App, frame: &mut Frame, area: Rect, now: Instant) {
             height: area.height.saturating_sub(2),
             ..area
         };
-        draw_body(app, frame, body, now);
+        draw_cards(app, frame, body, now);
         draw_wall_hint(app, frame, area, now);
         return;
     }
@@ -167,6 +169,1145 @@ fn column_count(width: u16, height: u16, count: usize) -> usize {
 }
 
 fn draw_body(app: &mut App, frame: &mut Frame, area: Rect, now: Instant) {
+    if app.activity.open {
+        draw_activity(app, frame, area, now);
+        return;
+    }
+    if app.wall {
+        draw_cards(app, frame, area, now);
+        return;
+    }
+    let rail_width = if area.width >= 172 && area.height >= 43 {
+        Some(((area.width as f32 * 0.285) as u16).clamp(48, 64))
+    } else {
+        None
+    };
+    if let Some(rail_width) = rail_width {
+        let [cards, _, rail] = Layout::horizontal([
+            Constraint::Fill(1),
+            Constraint::Length(1),
+            Constraint::Length(rail_width),
+        ])
+        .areas(area);
+        draw_cards(app, frame, cards, now);
+        draw_activity_rail(app, frame, rail, now);
+        return;
+    }
+    let shelf_height = if area.width >= 96 && area.height >= 40 {
+        ((area.height as f32 * 0.22) as u16).clamp(7, 10)
+    } else if area.width >= 96 && area.height >= 34 {
+        6
+    } else {
+        0
+    };
+    if shelf_height > 0 {
+        let [cards, shelf] =
+            Layout::vertical([Constraint::Fill(1), Constraint::Length(shelf_height)]).areas(area);
+        draw_cards(app, frame, cards, now);
+        draw_activity_shelf(app, frame, shelf, now);
+    } else if area.width >= 96 && area.height > 1 {
+        let [cards, ticker] =
+            Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(area);
+        draw_cards(app, frame, cards, now);
+        draw_activity_ticker(app, frame, ticker, now);
+    } else {
+        draw_cards(app, frame, area, now);
+    }
+}
+
+fn feed_now_ms() -> i64 {
+    chrono::Utc::now().timestamp_millis()
+}
+
+fn feed_health(app: &App) -> (String, Color) {
+    let label = app.activity.health_label(feed_now_ms());
+    let color = match app.activity.health {
+        Health::Live => GOOD,
+        Health::Stale => WARN,
+        Health::Offline | Health::NotConnected | Health::Error => BAD,
+    };
+    (label, color)
+}
+
+fn feed_scope(app: &App) -> String {
+    app.scope_label().to_uppercase()
+}
+
+fn feed_glyph(entry: &Entry) -> (&'static str, Color) {
+    match entry.kind() {
+        EntryKind::Purchase => {
+            let event = entry
+                .purchase
+                .as_ref()
+                .map_or("", |purchase| purchase.event.as_str());
+            match event {
+                "renewal" => ("⟳", RETENTION),
+                "trial_conversion" => ("◐", TRIAL),
+                "revenue" => ("~", DIM),
+                _ => ("+", MONEY),
+            }
+        }
+        EntryKind::Review => {
+            let stars = entry.stars().unwrap_or(0);
+            ("★", if stars <= 2 { BAD } else { WARN })
+        }
+        EntryKind::Rating => ("☆", WARN),
+        EntryKind::Unknown => ("·", DIM),
+    }
+}
+
+fn feed_stars(stars: i64) -> String {
+    let stars = stars.clamp(0, 5) as usize;
+    format!("{}{}", "★".repeat(stars), "☆".repeat(5 - stars))
+}
+
+fn feed_value(entry: &Entry) -> (String, Color) {
+    match entry.kind() {
+        EntryKind::Purchase => {
+            let Some(purchase) = &entry.purchase else {
+                return ("—".to_string(), DIM);
+            };
+            let text = format_metric(purchase.amount, "$", &purchase.currency);
+            let prefix = if purchase.estimated { "~+" } else { "+" };
+            (
+                format!("{prefix}{text}"),
+                if purchase.estimated { DIM } else { MONEY },
+            )
+        }
+        EntryKind::Review => {
+            let stars = entry.stars().unwrap_or(0);
+            (feed_stars(stars), if stars <= 2 { BAD } else { WARN })
+        }
+        EntryKind::Rating => match entry.rating.as_ref() {
+            Some(rating) => match rating.stars {
+                Some(stars) => (feed_stars(stars), if stars <= 2 { BAD } else { WARN }),
+                None => (format!("avg {:.1}", rating.average), DIM),
+            },
+            None => ("—".to_string(), DIM),
+        },
+        EntryKind::Unknown => ("—".to_string(), DIM),
+    }
+}
+
+fn feed_body(entry: &Entry, width: usize) -> String {
+    let body = match entry.kind() {
+        EntryKind::Purchase => {
+            let product = entry
+                .purchase
+                .as_ref()
+                .map_or("", |purchase| purchase.product.as_str());
+            if product.is_empty() || entry.app.to_lowercase().contains(&product.to_lowercase()) {
+                entry.app.clone()
+            } else {
+                format!("{} · {}", entry.app, product)
+            }
+        }
+        EntryKind::Review => {
+            let excerpt = entry.review_excerpt(width.saturating_sub(entry.app.len() + 6).max(8));
+            if excerpt.is_empty() {
+                entry.app.clone()
+            } else {
+                format!("{} · “{}”", entry.app, excerpt)
+            }
+        }
+        EntryKind::Rating => format!("{} · new rating", entry.app),
+        EntryKind::Unknown => entry.app.clone(),
+    };
+    truncate_display(&body, width)
+}
+
+fn feed_stamp(entry: &Entry) -> String {
+    entry.datetime().map_or_else(
+        || "--:--".to_string(),
+        |date| date.format("%H:%M").to_string(),
+    )
+}
+
+fn feed_day(entry: &Entry) -> String {
+    entry
+        .datetime()
+        .map_or_else(String::new, |date| date.date_naive().to_string())
+}
+
+fn feed_day_label(entry: &Entry, now_ms: i64) -> String {
+    let Some(date) = entry.datetime() else {
+        return "UNKNOWN".to_string();
+    };
+    let today = chrono::Local
+        .timestamp_millis_opt(now_ms)
+        .single()
+        .map(|now| now.date_naive());
+    let Some(today) = today else {
+        return date.format("%d %b").to_string().to_uppercase();
+    };
+    let day = date.date_naive();
+    if day == today {
+        "TODAY".to_string()
+    } else if day == today.pred_opt().unwrap_or(today) {
+        "YESTERDAY".to_string()
+    } else {
+        date.format("%d %b").to_string().to_uppercase()
+    }
+}
+
+fn feed_line(entry: &Entry, width: u16, selected: bool) -> Line<'static> {
+    let background = if selected { SELECTION } else { BG };
+    let (glyph, glyph_color) = feed_glyph(entry);
+    let (value, value_color) = feed_value(entry);
+    let fixed = 28;
+    let body_width = (width as usize).saturating_sub(fixed);
+    let body = feed_body(entry, body_width);
+    let body_padding = " ".repeat(body_width.saturating_sub(body.chars().count()));
+    Line::from(vec![
+        Span::styled(
+            format!(" {}  ", feed_stamp(entry)),
+            Style::new().fg(DIM).bg(background),
+        ),
+        Span::styled(
+            format!("{glyph}  "),
+            Style::new().fg(glyph_color).bg(background),
+        ),
+        Span::styled(
+            format!("{body}{body_padding}"),
+            Style::new().fg(TEXT).bg(background),
+        ),
+        Span::styled(
+            format!("  {value:>10}"),
+            Style::new().fg(value_color).bg(background),
+        ),
+        Span::styled(
+            format!("  {:>2}", entry.country),
+            Style::new().fg(DIM).bg(background),
+        ),
+    ])
+}
+
+fn feed_review_pair(entry: &Entry, width: u16, selected: bool) -> [Line<'static>; 2] {
+    let background = if selected { SELECTION } else { BG };
+    let (glyph, glyph_color) = feed_glyph(entry);
+    let (value, value_color) = feed_value(entry);
+    let fixed = 28;
+    let body_width = (width as usize).saturating_sub(fixed);
+    let app = truncate_display(&entry.app, body_width);
+    let app_padding = " ".repeat(body_width.saturating_sub(app.chars().count()));
+    let quote_width = (width as usize).saturating_sub(12);
+    let quote = entry.review_excerpt(quote_width);
+    [
+        Line::from(vec![
+            Span::styled(
+                format!(" {}  ", feed_stamp(entry)),
+                Style::new().fg(DIM).bg(background),
+            ),
+            Span::styled(
+                format!("{glyph}  "),
+                Style::new().fg(glyph_color).bg(background),
+            ),
+            Span::styled(
+                format!("{app}{app_padding}"),
+                Style::new().fg(TEXT).bg(background),
+            ),
+            Span::styled(
+                format!("  {value:>10}"),
+                Style::new().fg(value_color).bg(background),
+            ),
+            Span::styled(
+                format!("  {:>2}", entry.country),
+                Style::new().fg(DIM).bg(background),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                format!("             “{quote}”"),
+                Style::new().fg(DIM).bg(background),
+            ),
+            Span::styled(
+                format!("  {:>2}", entry.country),
+                Style::new().fg(DIM).bg(background),
+            ),
+        ]),
+    ]
+}
+
+fn draw_feed_rows(
+    frame: &mut Frame,
+    area: Rect,
+    entries: &[&Entry],
+    selected: Option<usize>,
+    now_ms: i64,
+) {
+    if entries.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "No activity in this range.",
+                Style::new().fg(DIM),
+            ))),
+            area,
+        );
+        return;
+    }
+    let visible = area.height as usize;
+    let selected_index = selected;
+    let offset = selected_index
+        .unwrap_or(0)
+        .saturating_sub(visible.saturating_sub(1));
+    let mut row = 0usize;
+    let mut last_day = String::new();
+    for (index, entry) in entries.iter().enumerate().skip(offset) {
+        if row >= visible {
+            break;
+        }
+        let day = feed_day(entry);
+        if day != last_day {
+            if row >= visible {
+                break;
+            }
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    feed_day_label(entry, now_ms),
+                    Style::new().fg(DIM).add_modifier(Modifier::BOLD),
+                ))),
+                Rect {
+                    x: area.x,
+                    y: area.y + row as u16,
+                    width: area.width,
+                    height: 1,
+                },
+            );
+            row += 1;
+            last_day = day;
+            if row >= visible {
+                break;
+            }
+        }
+        let highlighted = selected_index == Some(index);
+        let line = feed_line(entry, area.width, highlighted);
+        let background = if highlighted { SELECTION } else { BG };
+        frame.render_widget(
+            Paragraph::new(line).style(Style::new().bg(background)),
+            Rect {
+                x: area.x,
+                y: area.y + row as u16,
+                width: area.width,
+                height: 1,
+            },
+        );
+        row += 1;
+    }
+    if offset > 0 && area.height > 0 {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                format!("{offset} earlier · j/k"),
+                Style::new().fg(DIM),
+            ))),
+            Rect {
+                x: area.x,
+                y: area.bottom().saturating_sub(1),
+                width: area.width,
+                height: 1,
+            },
+        );
+    }
+}
+
+fn draw_activity_ticker(app: &App, frame: &mut Frame, area: Rect, now: Instant) {
+    let entries = app.activity_entries_all(Range::D7);
+    let (health, health_color) = feed_health(app);
+    let latest = entries.first();
+    let unread = app.activity_unread();
+    let mut spans = vec![Span::styled(
+        if unread > 0 { "● " } else { "· " },
+        Style::new().fg(if unread > 0 { MONEY } else { DIM }),
+    )];
+    if let Some(entry) = latest {
+        spans.push(Span::styled(
+            format!("{}  ", feed_stamp(entry)),
+            Style::new().fg(DIM),
+        ));
+        let (glyph, color) = feed_glyph(entry);
+        spans.push(Span::styled(format!("{glyph}  "), Style::new().fg(color)));
+        spans.push(Span::styled(
+            truncate_display(&feed_body(entry, 60), 60),
+            Style::new().fg(TEXT),
+        ));
+        let (value, value_color) = feed_value(entry);
+        spans.push(Span::styled(
+            format!("  {value}"),
+            Style::new().fg(value_color),
+        ));
+    } else {
+        spans.push(Span::styled(
+            "activity starts with the next sale or review",
+            Style::new().fg(DIM),
+        ));
+    }
+    spans.push(Span::styled(
+        format!("   {health}   f ACTIVITY",),
+        Style::new().fg(health_color),
+    ));
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+    let _ = now;
+}
+
+fn draw_activity_shelf(app: &App, frame: &mut Frame, area: Rect, now: Instant) {
+    if area.height < 2 {
+        return;
+    }
+    frame.render_widget(
+        Paragraph::new(Span::styled(
+            "─".repeat(area.width as usize),
+            Style::new().fg(BORDER_STRONG),
+        )),
+        Rect {
+            x: area.x,
+            y: area.y,
+            width: area.width,
+            height: 1,
+        },
+    );
+    frame.render_widget(
+        Block::default().style(Style::new().bg(SURFACE)),
+        Rect {
+            x: area.x,
+            y: area.y + 1,
+            width: area.width,
+            height: area.height.saturating_sub(1),
+        },
+    );
+    let entries = app.activity_entries_all(Range::D7);
+    let (health, health_color) = feed_health(app);
+    let unread = app.activity_unread();
+    let header_area = Rect {
+        x: area.x + 2,
+        y: area.y + 1,
+        width: area.width.saturating_sub(4),
+        height: 1,
+    };
+    let mut header = vec![
+        Span::styled(
+            "ACTIVITY",
+            Style::new().fg(BRIGHT).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("   ", Style::new()),
+        Span::styled(
+            if unread > 0 { "● " } else { "· " },
+            Style::new().fg(if unread > 0 { MONEY } else { DIM }),
+        ),
+        Span::styled(
+            if unread > 0 {
+                format!("{unread} NEW")
+            } else {
+                "LIVE".to_string()
+            },
+            Style::new().fg(if unread > 0 { MONEY } else { DIM }),
+        ),
+    ];
+    if entries.len() > area.height.saturating_sub(2) as usize {
+        header.push(Span::styled(
+            format!(
+                "  +{}",
+                entries.len() - area.height.saturating_sub(2) as usize
+            ),
+            Style::new().fg(DIM),
+        ));
+    }
+    frame.render_widget(Paragraph::new(Line::from(header)), header_area);
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(health, Style::new().fg(health_color)),
+            Span::styled("   f FULL FEED", Style::new().fg(DIM)),
+        ]))
+        .alignment(Alignment::Right),
+        Rect {
+            x: area.x + 2,
+            y: area.y + 1,
+            width: area.width.saturating_sub(4),
+            height: 1,
+        },
+    );
+    let row_area = Rect {
+        x: area.x + 2,
+        y: area.y + 2,
+        width: area.width.saturating_sub(4),
+        height: area.height.saturating_sub(3),
+    };
+    draw_feed_rows(frame, row_area, &entries, None, feed_now_ms());
+    let _ = now;
+}
+
+fn draw_pulse(frame: &mut Frame, area: Rect, entries: &[&Entry], now_ms: i64) {
+    let mut bins = vec![(0usize, 0usize); 24];
+    for entry in entries {
+        let age = now_ms.saturating_sub(entry.timestamp()).max(0) / 3_600_000;
+        if age > 23 {
+            continue;
+        }
+        let index = 23 - age;
+        if entry.is_money() {
+            bins[index as usize].0 += 1;
+        } else if entry.is_review() {
+            bins[index as usize].1 += 1;
+        }
+    }
+    let width = area.width as usize;
+    let bin_width = if width >= 48 { 2 } else { 1 };
+    let top = area.y;
+    let bottom = area.y + 1;
+    for (index, (money, reviews)) in bins.iter().enumerate() {
+        let x = area.x + (index * bin_width) as u16;
+        let style_money = Style::new().fg(MONEY);
+        let style_reviews = Style::new().fg(WARN);
+        if *reviews > 0 {
+            frame.buffer_mut().set_string(x, top, "█", style_reviews);
+            if bin_width > 1 {
+                frame
+                    .buffer_mut()
+                    .set_string(x + 1, top, "█", style_reviews);
+            }
+        }
+        if *money > 0 {
+            frame.buffer_mut().set_string(x, bottom, "█", style_money);
+            if bin_width > 1 {
+                frame
+                    .buffer_mut()
+                    .set_string(x + 1, bottom, "█", style_money);
+            }
+        }
+        if *money == 0 && *reviews == 0 {
+            frame
+                .buffer_mut()
+                .set_string(x, bottom, "·", Style::new().fg(BORDER));
+        }
+    }
+}
+
+fn draw_activity_rail(app: &App, frame: &mut Frame, area: Rect, now: Instant) {
+    if area.height < 8 || area.width < 20 {
+        return;
+    }
+    frame.render_widget(Block::default().style(Style::new().bg(SURFACE)), area);
+    if area.x > 0 {
+        for y in area.y..area.bottom() {
+            frame.buffer_mut().set_string(
+                area.x - 1,
+                y,
+                "│",
+                Style::new().fg(BORDER_STRONG).bg(BG),
+            );
+        }
+    }
+    let entries = app.activity_entries_all(Range::D7);
+    let (health, health_color) = feed_health(app);
+    let unread = app.activity_unread();
+    let inner_x = area.x + 2;
+    let inner_w = area.width.saturating_sub(4);
+    let header_y = area.y;
+    let header = vec![
+        Span::styled(
+            "ACTIVITY",
+            Style::new().fg(BRIGHT).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("  ", Style::new()),
+        Span::styled(
+            if unread > 0 { "● " } else { "· " },
+            Style::new().fg(if unread > 0 { MONEY } else { DIM }),
+        ),
+        Span::styled(
+            if unread > 0 {
+                format!("{unread} NEW")
+            } else {
+                "LIVE".to_string()
+            },
+            Style::new().fg(if unread > 0 { MONEY } else { DIM }),
+        ),
+    ];
+    frame.render_widget(
+        Paragraph::new(Line::from(header)),
+        Rect {
+            x: inner_x,
+            y: header_y,
+            width: inner_w,
+            height: 1,
+        },
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled("f", Style::new().fg(DIM))))
+            .alignment(Alignment::Right),
+        Rect {
+            x: inner_x,
+            y: header_y,
+            width: inner_w,
+            height: 1,
+        },
+    );
+
+    let now_ms = feed_now_ms();
+    let pulse_entries = app.activity_entries_all(Range::H24);
+    let mut y = header_y + 1;
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                "PULSE 24H",
+                Style::new().fg(DIM).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("   {} EVENTS", pulse_entries.len()),
+                Style::new().fg(DIM),
+            ),
+        ])),
+        Rect {
+            x: inner_x,
+            y,
+            width: inner_w,
+            height: 1,
+        },
+    );
+    y += 1;
+    draw_pulse(
+        frame,
+        Rect {
+            x: inner_x,
+            y,
+            width: inner_w,
+            height: 2,
+        },
+        &pulse_entries,
+        now_ms,
+    );
+    y += 3;
+    frame.render_widget(
+        Paragraph::new(Span::styled(
+            "─".repeat(inner_w as usize),
+            Style::new().fg(BORDER),
+        )),
+        Rect {
+            x: inner_x,
+            y,
+            width: inner_w,
+            height: 1,
+        },
+    );
+    y += 1;
+
+    let attention = app.activity_attention();
+    let mut attention_id = None;
+    if let Some(entry) = attention {
+        attention_id = Some(entry.id.clone());
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "ATTENTION · 1",
+                Style::new().fg(DIM).add_modifier(Modifier::BOLD),
+            ))),
+            Rect {
+                x: inner_x,
+                y,
+                width: inner_w,
+                height: 1,
+            },
+        );
+        y += 1;
+        let (stars, color) = feed_value(entry);
+        let stars = if entry.stars().is_some() {
+            stars
+        } else {
+            "new rating".to_string()
+        };
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(format!("{stars}  "), Style::new().fg(color)),
+                Span::styled(
+                    truncate_display(&entry.app, inner_w.saturating_sub(20) as usize),
+                    Style::new().fg(BAD).add_modifier(Modifier::BOLD),
+                ),
+            ])),
+            Rect {
+                x: inner_x,
+                y,
+                width: inner_w,
+                height: 1,
+            },
+        );
+        y += 1;
+        if entry.kind() == EntryKind::Review {
+            let quote = entry.review_excerpt(inner_w.saturating_sub(4) as usize);
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    format!("“{quote}”"),
+                    Style::new().fg(TEXT),
+                ))),
+                Rect {
+                    x: inner_x,
+                    y,
+                    width: inner_w,
+                    height: 1,
+                },
+            );
+            y += 1;
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    format!(
+                        "{} · written review · {}",
+                        entry.country,
+                        age_label(now_ms, entry.received_at)
+                    ),
+                    Style::new().fg(DIM),
+                ))),
+                Rect {
+                    x: inner_x,
+                    y,
+                    width: inner_w,
+                    height: 1,
+                },
+            );
+            y += 1;
+        }
+    }
+
+    frame.render_widget(
+        Paragraph::new(Span::styled(
+            "─".repeat(inner_w as usize),
+            Style::new().fg(BORDER),
+        )),
+        Rect {
+            x: inner_x,
+            y,
+            width: inner_w,
+            height: 1,
+        },
+    );
+    y += 1;
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("LIVE", Style::new().fg(DIM).add_modifier(Modifier::BOLD)),
+            Span::styled("  ", Style::new()),
+            Span::styled(
+                if unread > 0 {
+                    format!("{unread} NEW")
+                } else {
+                    "UP TO DATE".to_string()
+                },
+                Style::new().fg(if unread > 0 { MONEY } else { DIM }),
+            ),
+        ])),
+        Rect {
+            x: inner_x,
+            y,
+            width: inner_w,
+            height: 1,
+        },
+    );
+    y += 1;
+    let avail = area.bottom().saturating_sub(y + 1);
+    let mut row = 0u16;
+    let mut last_day = String::new();
+    let attention_key = attention_id.as_deref();
+    for entry in entries
+        .iter()
+        .filter(|entry| Some(entry.id.as_str()) != attention_key)
+    {
+        if row >= avail {
+            break;
+        }
+        let day = feed_day(entry);
+        if day != last_day {
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    feed_day_label(entry, now_ms),
+                    Style::new().fg(DIM).add_modifier(Modifier::BOLD),
+                ))),
+                Rect {
+                    x: inner_x,
+                    y: y + row,
+                    width: inner_w,
+                    height: 1,
+                },
+            );
+            row += 1;
+            last_day = day;
+            if row >= avail {
+                break;
+            }
+        }
+        if entry.kind() == EntryKind::Review && row + 1 < avail {
+            let pair = feed_review_pair(entry, inner_w, false);
+            for line in pair {
+                frame.render_widget(
+                    Paragraph::new(line),
+                    Rect {
+                        x: inner_x,
+                        y: y + row,
+                        width: inner_w,
+                        height: 1,
+                    },
+                );
+                row += 1;
+            }
+        } else {
+            frame.render_widget(
+                Paragraph::new(feed_line(entry, inner_w, false)),
+                Rect {
+                    x: inner_x,
+                    y: y + row,
+                    width: inner_w,
+                    height: 1,
+                },
+            );
+            row += 1;
+        }
+    }
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("storebot ", Style::new().fg(DIM)),
+            Span::styled(health, Style::new().fg(health_color)),
+            Span::styled("   f FULL FEED", Style::new().fg(DIM)),
+        ])),
+        Rect {
+            x: inner_x,
+            y: area.bottom().saturating_sub(1),
+            width: inner_w,
+            height: 1,
+        },
+    );
+    let _ = now;
+}
+
+fn draw_activity(app: &App, frame: &mut Frame, area: Rect, now: Instant) {
+    let now_ms = feed_now_ms();
+    let [header, rule, body] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Fill(1),
+    ])
+    .areas(area);
+    let scope = feed_scope(app);
+    let mut left = vec![
+        Span::styled(
+            " ACTIVITY",
+            Style::new().fg(BRIGHT).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("  ·  ", Style::new().fg(DIM)),
+        Span::styled(scope, Style::new().fg(TEXT)),
+    ];
+    let (health, health_color) = feed_health(app);
+    left.push(Span::styled(
+        format!("   ● {health}"),
+        Style::new().fg(health_color),
+    ));
+    let unread = app.activity_unread();
+    if unread > 0 {
+        left.push(Span::styled(
+            format!("   {unread} NEW"),
+            Style::new().fg(MONEY),
+        ));
+    }
+    frame.render_widget(Paragraph::new(Line::from(left)), header);
+    let ranges = Range::ALL;
+    let mut right = Vec::new();
+    for range in ranges {
+        let active = app.activity.range == range;
+        right.push(Span::styled(
+            format!(" {} ", range.label()),
+            Style::new()
+                .fg(if active { BRIGHT } else { DIM })
+                .bg(if active { SURFACE } else { BG })
+                .add_modifier(if active {
+                    Modifier::BOLD
+                } else {
+                    Modifier::empty()
+                }),
+        ));
+    }
+    right.push(Span::styled("   ", Style::new()));
+    for filter in Filter::ALL {
+        let active = app.activity.filter == filter;
+        right.push(Span::styled(
+            format!(" {} ", filter.label()),
+            Style::new()
+                .fg(if active { BRIGHT } else { DIM })
+                .add_modifier(if active {
+                    Modifier::BOLD
+                } else {
+                    Modifier::empty()
+                }),
+        ));
+    }
+    frame.render_widget(
+        Paragraph::new(Line::from(right)).alignment(Alignment::Right),
+        header,
+    );
+    frame.render_widget(
+        Paragraph::new(Span::styled(
+            "─".repeat(rule.width as usize),
+            Style::new().fg(BORDER_STRONG),
+        )),
+        rule,
+    );
+    let entries = app.activity_entries(app.activity.range);
+    let selected = app.activity.selected_index(&entries);
+    if area.width >= 150 {
+        let [list, gap, detail_area] = Layout::horizontal([
+            Constraint::Percentage(62),
+            Constraint::Length(2),
+            Constraint::Percentage(38),
+        ])
+        .areas(body);
+        draw_activity_list(frame, list, &entries, selected, now_ms);
+        frame.render_widget(Block::default().style(Style::new().bg(SURFACE)), gap);
+        draw_activity_detail(frame, detail_area, entries.get(selected).copied(), now_ms);
+    } else if body.height >= 12 {
+        let [list, gap, detail_area] = Layout::vertical([
+            Constraint::Fill(3),
+            Constraint::Length(1),
+            Constraint::Fill(2),
+        ])
+        .areas(body);
+        draw_activity_list(frame, list, &entries, selected, now_ms);
+        draw_activity_detail(frame, detail_area, entries.get(selected).copied(), now_ms);
+        let _ = gap;
+    } else {
+        draw_activity_list(frame, body, &entries, selected, now_ms);
+    }
+    let _ = now;
+}
+
+fn draw_activity_list(
+    frame: &mut Frame,
+    area: Rect,
+    entries: &[&Entry],
+    selected: usize,
+    now_ms: i64,
+) {
+    let visible = area.height as usize;
+    let offset = selected.saturating_sub(visible.saturating_sub(1));
+    let mut row = 0usize;
+    let mut last_day = String::new();
+    for (index, entry) in entries.iter().enumerate().skip(offset) {
+        if row >= visible {
+            break;
+        }
+        let day = feed_day(entry);
+        if day != last_day {
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    feed_day_label(entry, now_ms),
+                    Style::new().fg(DIM).add_modifier(Modifier::BOLD),
+                ))),
+                Rect {
+                    x: area.x,
+                    y: area.y + row as u16,
+                    width: area.width,
+                    height: 1,
+                },
+            );
+            row += 1;
+            last_day = day;
+            if row >= visible {
+                break;
+            }
+        }
+        let background = if index == selected { SELECTION } else { BG };
+        frame.render_widget(
+            Paragraph::new(feed_line(entry, area.width, index == selected))
+                .style(Style::new().bg(background)),
+            Rect {
+                x: area.x,
+                y: area.y + row as u16,
+                width: area.width,
+                height: 1,
+            },
+        );
+        row += 1;
+    }
+    if entries.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "No activity in this range.",
+                Style::new().fg(DIM),
+            ))),
+            area,
+        );
+    }
+}
+
+fn draw_activity_detail(frame: &mut Frame, area: Rect, entry: Option<&Entry>, now_ms: i64) {
+    let Some(entry) = entry else {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "Select an activity item.",
+                Style::new().fg(DIM),
+            ))),
+            area,
+        );
+        return;
+    };
+    let source = if entry.source.is_empty() {
+        String::new()
+    } else {
+        format!(" · {}", entry.source.to_uppercase())
+    };
+    let kind = match entry.kind() {
+        EntryKind::Purchase => format!("PURCHASE{source}"),
+        EntryKind::Review => format!("WRITTEN REVIEW{source}"),
+        EntryKind::Rating => format!("RATING ONLY{source}"),
+        EntryKind::Unknown => format!("ACTIVITY{source}"),
+    };
+    let mut lines = vec![Line::from(Span::styled(
+        kind,
+        Style::new().fg(DIM).add_modifier(Modifier::BOLD),
+    ))];
+    match entry.kind() {
+        EntryKind::Purchase => {
+            if let Some(purchase) = &entry.purchase {
+                let (value, color) = feed_value(entry);
+                lines.push(Line::from(Span::styled(
+                    value,
+                    Style::new().fg(color).add_modifier(Modifier::BOLD),
+                )));
+                if !purchase.product.is_empty() {
+                    lines.push(Line::from(Span::styled(
+                        purchase.product.clone(),
+                        Style::new().fg(BRIGHT).add_modifier(Modifier::BOLD),
+                    )));
+                }
+                lines.push(Line::from(Span::styled(
+                    entry.app.clone(),
+                    Style::new().fg(TEXT),
+                )));
+                lines.push(Line::from(Span::styled(
+                    format!(
+                        "{} · {} · {}",
+                        purchase.event.replace('_', " "),
+                        entry.country,
+                        feed_stamp(entry)
+                    ),
+                    Style::new().fg(DIM),
+                )));
+                if purchase.first_ever || purchase.first_today {
+                    let mut tags = Vec::new();
+                    if purchase.first_ever {
+                        tags.push("FIRST EVER");
+                    }
+                    if purchase.first_today {
+                        tags.push("FIRST TODAY");
+                    }
+                    lines.push(Line::from(Span::styled(
+                        tags.join(" · "),
+                        Style::new().fg(WARN),
+                    )));
+                }
+                if purchase.estimated {
+                    lines.push(Line::from(Span::styled(
+                        "App-level delta; no per-sale detail.",
+                        Style::new().fg(DIM),
+                    )));
+                }
+                if !purchase.transaction_id.is_empty() {
+                    lines.push(Line::from(Span::styled(
+                        format!("transaction {}", purchase.transaction_id),
+                        Style::new().fg(DIM),
+                    )));
+                }
+            }
+        }
+        EntryKind::Review => {
+            let Some(review) = &entry.review else {
+                return;
+            };
+            let (stars, color) = feed_value(entry);
+            lines.push(Line::from(Span::styled(
+                stars,
+                Style::new().fg(color).add_modifier(Modifier::BOLD),
+            )));
+            if !review.title.is_empty() {
+                lines.push(Line::from(Span::styled(
+                    format!("“{}”", review.title),
+                    Style::new().fg(BRIGHT).add_modifier(Modifier::BOLD),
+                )));
+            }
+            lines.push(Line::from(Span::styled(
+                format!(
+                    "{} · {} · {}",
+                    entry.app,
+                    entry.country,
+                    age_label(now_ms, entry.received_at)
+                ),
+                Style::new().fg(DIM),
+            )));
+            if !review.author.is_empty() {
+                lines.push(Line::from(Span::styled(
+                    format!("— {}", review.author),
+                    Style::new().fg(DIM),
+                )));
+            }
+            if !review.body.is_empty() {
+                lines.push(Line::default());
+                for line in review.body.lines().take(20) {
+                    lines.push(Line::from(Span::styled(
+                        line.to_string(),
+                        Style::new().fg(TEXT),
+                    )));
+                }
+            }
+        }
+        EntryKind::Rating => {
+            if let Some(rating) = &entry.rating {
+                let (stars, color) = feed_value(entry);
+                lines.push(Line::from(Span::styled(
+                    stars,
+                    Style::new().fg(color).add_modifier(Modifier::BOLD),
+                )));
+                lines.push(Line::from(Span::styled(
+                    format!(
+                        "{} · {} · {}",
+                        entry.app,
+                        entry.country,
+                        age_label(now_ms, entry.received_at)
+                    ),
+                    Style::new().fg(DIM),
+                )));
+                lines.push(Line::from(Span::styled(
+                    format!(
+                        "{} new rating · average {:.1}",
+                        rating.count, rating.average
+                    ),
+                    Style::new().fg(TEXT),
+                )));
+            }
+        }
+        EntryKind::Unknown => {}
+    }
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
+}
+
+fn age_label(now_ms: i64, then_ms: i64) -> String {
+    let seconds = (now_ms - then_ms).max(0) / 1000;
+    match seconds {
+        0..=2 => "now".to_string(),
+        3..=59 => format!("{seconds}s ago"),
+        60..=3599 => format!("{}m ago", seconds / 60),
+        _ => format!("{}h ago", seconds / 3600),
+    }
+}
+
+fn truncate_display(text: &str, max: usize) -> String {
+    use unicode_width::UnicodeWidthChar;
+    if max == 0 {
+        return String::new();
+    }
+    let mut width = 0;
+    let mut out = String::new();
+    for character in text.chars() {
+        let char_width = character.width().unwrap_or(0);
+        if width + char_width > max.saturating_sub(1) {
+            out.push('…');
+            break;
+        }
+        width += char_width;
+        out.push(character);
+    }
+    out
+}
+
+fn draw_cards(app: &mut App, frame: &mut Frame, area: Rect, now: Instant) {
     if app.cards.is_empty() {
         let lines = match &app.status {
             Status::Error(failure) if !app.has_data() => error_lines(failure),
@@ -784,6 +1925,26 @@ fn draw_footer(app: &App, frame: &mut Frame, area: Rect, now: Instant) {
     let [left, right] =
         Layout::horizontal([Constraint::Fill(1), Constraint::Length(38)]).areas(area);
 
+    if app.activity.open {
+        let (health, color) = feed_health(app);
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                " j/k move   Tab filter   [ ] range   f close   ? help",
+                Style::new().fg(DIM),
+            ))),
+            left,
+        );
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                format!("storebot {health} "),
+                Style::new().fg(color),
+            )))
+            .alignment(Alignment::Right),
+            right,
+        );
+        return;
+    }
+
     let hints = now.saturating_duration_since(app.last_input) < Duration::from_secs(10);
     let left_line = if let Some(notice) = app.notice_active(now) {
         Line::from(Span::styled(
@@ -795,9 +1956,9 @@ fn draw_footer(app: &App, frame: &mut Frame, area: Rect, now: Instant) {
         ))
     } else if hints {
         let keys = if app.demo {
-            " q quit   r refresh   p projects   ? help"
+            " q quit   r refresh   p projects   f activity   ? help"
         } else {
-            " q quit   r refresh   p projects   Enter detail   ! health   ? help   w wall   x export"
+            " q quit   r refresh   p projects   f activity   Enter detail   ? help"
         };
         Line::from(Span::styled(keys, Style::new().fg(DIM)))
     } else if app.stale(now) {
@@ -1120,7 +2281,7 @@ fn draw_health(app: &App, frame: &mut Frame, area: Rect, now: Instant) {
 
 fn draw_help(frame: &mut Frame, area: Rect) {
     let width = area.width.saturating_sub(12).clamp(50, 100);
-    let height = 22.min(area.height.saturating_sub(4));
+    let height = 28.min(area.height.saturating_sub(4));
     let rect = Rect {
         x: area.x + (area.width.saturating_sub(width)) / 2,
         y: area.y + (area.height.saturating_sub(height)) / 2,
@@ -1145,6 +2306,7 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         key_line("q / Esc", "quit"),
         key_line("r", "refresh now (forces charts)"),
         key_line("p", "project picker"),
+        key_line("f", "open the activity feed"),
         key_line("← → / ↑ ↓ / Tab", "move card focus"),
         key_line("Enter", "metric detail"),
         key_line("!", "project health"),
@@ -1160,6 +2322,13 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         key_line("t", "7 / 28 / 90 days"),
         key_line("j / k", "move the project table"),
         key_line("Enter", "scope the dashboard to the selected project"),
+        Line::default(),
+        dim_line("  Activity"),
+        key_line("f / Esc / q", "close activity"),
+        key_line("j / k", "move selection"),
+        key_line("Tab", "all / purchases / reviews"),
+        key_line("[ / ]", "24h / 7d / 28d"),
+        key_line("g / G", "first / last"),
         Line::default(),
         dim_line("  Cards: RevenueCat overview values. Sparklines: 28 daily points."),
         dim_line("  Trends: last 7 days vs the previous 7. * marks a partial total."),
@@ -1913,6 +3082,90 @@ mod tests {
     use ratatui::backend::TestBackend;
 
     #[test]
+    fn demo_activity_renders_rail_shelf_and_full_view() {
+        let mut app = App::new(crate::app::AppOptions {
+            sources: vec![crate::app::Source::demo("One", "proj_demo_1")],
+            currency: "EUR".to_string(),
+            interval: Duration::from_secs(300),
+            chart_ttl: Duration::from_secs(900),
+            motion: crate::app::Motion::Full,
+            wall: false,
+            pins: Vec::new(),
+            ui_scale: 0,
+            ui_page: 0,
+            feed_path: None,
+            feed_seen_at: None,
+        });
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while app.cards.is_empty() && Instant::now() < deadline {
+            app.tick();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        let mut large = Terminal::new(TestBackend::new(200, 54)).unwrap();
+        large.draw(|frame| draw(&mut app, frame)).unwrap();
+        let rail: String = large
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(rail.contains("PULSE 24H"));
+        assert!(rail.contains("MagicWeather"));
+        assert!(rail.contains("FULL FEED"));
+
+        let mut shelf = Terminal::new(TestBackend::new(140, 44)).unwrap();
+        shelf.draw(|frame| draw(&mut app, frame)).unwrap();
+        let shelf_text: String = shelf
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(shelf_text.contains("ACTIVITY"));
+        assert!(shelf_text.contains("MagicWeather"));
+
+        let mut mid = Terminal::new(TestBackend::new(172, 46)).unwrap();
+        mid.draw(|frame| draw(&mut app, frame)).unwrap();
+        let mid_text: String = mid
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(mid_text.contains("PULSE 24H"));
+
+        let mut tiny = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        tiny.draw(|frame| draw(&mut app, frame)).unwrap();
+        let tiny_text: String = tiny
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(tiny_text.contains("f ACTIVITY"));
+
+        app.open_activity();
+        app.activity.selected_id = Some("demo:review:1".to_string());
+        let mut full = Terminal::new(TestBackend::new(200, 54)).unwrap();
+        full.draw(|frame| draw(&mut app, frame)).unwrap();
+        let full_text: String = full
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(full_text.contains("WRITTEN REVIEW"));
+        assert!(full_text.contains("Finally an app that respects battery"));
+        assert!(full_text.contains("storebot"));
+    }
+
+    #[test]
     fn demo_frame_contains_cards_and_sparklines() {
         let mut app = App::new(crate::app::AppOptions {
             sources: vec![crate::app::Source::demo("One", "proj1")],
@@ -1924,6 +3177,8 @@ mod tests {
             pins: Vec::new(),
             ui_scale: 0,
             ui_page: 0,
+            feed_path: None,
+            feed_seen_at: None,
         });
         let deadline = Instant::now() + Duration::from_secs(5);
         while app.cards.is_empty() && Instant::now() < deadline {

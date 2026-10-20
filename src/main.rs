@@ -1,3 +1,4 @@
+mod activity;
 mod api;
 mod app;
 mod config;
@@ -254,6 +255,8 @@ fn build_app(sources: Vec<Source>, config: &Config, currency: &str, args: &Args)
         pins: config.pins.clone(),
         ui_scale: config.ui_scale.unwrap_or(0).min(3),
         ui_page: config.ui_page.unwrap_or(0),
+        feed_path: config.feed_path.as_ref().map(std::path::PathBuf::from),
+        feed_seen_at: config.feed_seen_at,
     })
 }
 

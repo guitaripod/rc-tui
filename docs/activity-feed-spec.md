@@ -266,10 +266,10 @@ Rating-specific:
   count increase was observed, not the release time.
 - Feed retention: 500 entries and 90 days, whichever is smaller.
 - rc-tui's full view offers 24h, 7d and 28d ranges.
-- First install seeds **up to 24h of written reviews** with `backfilled: true`.
-  Purchases and ratings start live; no fake history. An optional
-  `storebot --backfill-feed 7d` can walk RevenueCat history later, but it is
-  never automatic.
+- First install seeds **up to 28 days of written reviews** with
+  `backfilled: true`. Purchases and ratings start live; no fake history. An
+  optional `storebot --backfill-feed 7d` can walk RevenueCat history later, but
+  it is never automatic.
 
 ### 3.7 Producer normalization and first-run seed
 
@@ -279,7 +279,7 @@ Rating-specific:
   before they enter the feed. Newlines survive in `review.body`; `text` is
   single-line.
 - Review bodies are capped at 2,000 characters.
-- On first feed creation, storebot seeds up to 24 hours of written reviews from
+- On first feed creation, storebot seeds up to 28 days of written reviews from
   the next ASC review poll. Seeded entries have `backfilled: true` and are
   never sent to Telegram. They are not counted as unread by rc-tui.
 - Purchases and ratings are not backfilled in v1. They start live.
@@ -335,7 +335,7 @@ specifies the chosen third pass.
 
 | Condition | Layout |
 |---|---|
-| `width >= 172 && body_h >= 46` | **Pulse rail** on the right, cards left |
+| `width >= 172 && body_h >= 43` | **Pulse rail** on the right, cards left |
 | `width >= 96 && body_h >= 40` | Full-width **shelf** below the cards |
 | `width >= 96 && body_h 34–39` | Compact shelf, 6 rows |
 | `width < 96 || body_h < 34` | One-line ticker above the footer |
@@ -349,8 +349,8 @@ The rail is chosen only where it genuinely improves the screen:
 - If `left_w / 3 >= 44`, use **3×2** cards; otherwise use **2×3**.
 - At 200×54: rail 57, cards 45×24. The charts gain height while every
   five-digit metric stays legible.
-- At 172×46: rail 49, cards 60×14 in 2×3. The rail earns its width; the cards
-  keep readable numbers.
+- At 172×46 (body 43): rail 49, cards 60×14 in 2×3. The rail earns its width;
+  the cards keep readable numbers.
 - At 140×44: shelf 9 rows, cards 32 rows, exactly as in the previous design.
 - At 100×30: ticker; the metric grid keeps its current space.
 - Page/scale behavior is unchanged. Fewer cards per page give each card more
@@ -389,13 +389,15 @@ columns for context rather than empty gutter.
   A quiet hour is a one-cell baseline, not a blank. The total is shown at the
   right. This is the “horizontal space” payoff: a temporal shape that a
   one-line feed could not show.
-- **Attention.** If there is an unseen 1–2★ written review in the last 24h, pin
+- **Attention.** If there is an unseen 1–2★ written review in the last 7 days, pin
   the newest one here with stars, app, quote and territory. If none, omit the
   block entirely; the stream moves up. Never rotate or auto-dismiss it. The
   pinned review is omitted from the stream below so it appears exactly once;
   it also clears as soon as the full activity view has marked it read.
-- **Live stream.** Newest first, with date separators. Purchases and ratings
-  use one row; written reviews use two:
+- **Live stream.** Newest first, last **7 days**, with date separators. The
+  pulse is deliberately the only 24-hour surface; the stream stays useful for
+  low-volume apps whose last review was days ago. Purchases and ratings use one
+  row; written reviews use two:
   - first line: time, glyph, app, stars/amount, country;
   - second line: the review title or a quote excerpt, indented under the app.
   This is why the rail needs 57 columns: reviews get a readable phrase rather
@@ -567,7 +569,7 @@ Rating:
 | Key | Action |
 |---|---|
 | `Tab` | All → Purchases → Reviews (written + ratings) |
-| `[` / `]` | 24h → 7d → 28d |
+| `[` / `]` | 24h → 7d → 28d (default **7d**) |
 | `j` / `k` | Move selection |
 | `g` / `G` | First / last |
 | `PgUp` / `PgDn` | Page |
@@ -818,7 +820,7 @@ detail, health or help modes.
 - `feed_seen_at` is monotonic: never move backwards if the clock or feed is
   older. Compare it to `received_at`.
 - On first run with a populated feed, unread is the number of entries with
-  `received_at` newer than `feed_seen_at` within 24h; if the key is absent,
+  `received_at` newer than `feed_seen_at` within 7d; if the key is absent,
   treat the feed as read from its oldest entry (no giant badge on first
   launch).
 - If an event's timestamp is more than 5 minutes in the future, clamp its
@@ -1068,7 +1070,8 @@ RevenueCat  ALL PROJECTS  17 projects  EUR                      02:48  ● live
   same schema.
 - **No emoji in rows**; country codes and terminal glyphs. Telegram text is
   preserved in the detail.
-- **Purchases start live**; only written reviews are seeded for the first 24h.
+- **Purchases start live**; only written reviews are seeded for the first 28
+  days.
 - **Stars-only ratings are held** for two review cycles plus five minutes.
 - **Wall mode hides activity**; detail and modal views hide it too.
 - **`f` is the only new dashboard key**; full-view keys are modal.

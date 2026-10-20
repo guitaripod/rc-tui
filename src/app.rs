@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::fmt::Write as _;
+use std::path::PathBuf;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -11,6 +12,7 @@ use tachyonfx::{
     CellFilter, Duration as FxDuration, EffectManager, Interpolation, Motion as FxMotion, fx,
 };
 
+use crate::activity::{Activity, Entry, Filter, Range};
 use crate::api::{self, Client, Failure, OverviewMetric, Snapshot};
 use crate::config;
 use crate::theme;
@@ -641,6 +643,8 @@ pub struct AppOptions {
     pub pins: Vec<String>,
     pub ui_scale: u8,
     pub ui_page: usize,
+    pub feed_path: Option<PathBuf>,
+    pub feed_seen_at: Option<i64>,
 }
 
 pub struct App {
@@ -668,6 +672,7 @@ pub struct App {
     pub motion: Motion,
     pub ui_scale: u8,
     pub page: usize,
+    pub activity: Activity,
     worker: Worker,
     last_frame: Instant,
     frame_delta: FxDuration,
@@ -702,6 +707,7 @@ impl App {
                 last_success: None,
             })
             .collect();
+        let activity = Activity::new(options.feed_path, demo, options.feed_seen_at, now);
         let worker = Worker::spawn(options.sources, options.currency.clone(), options.chart_ttl);
         Self {
             currency: options.currency,
@@ -728,6 +734,7 @@ impl App {
             motion: options.motion,
             ui_scale: options.ui_scale.min(3),
             page: options.ui_page,
+            activity,
             worker,
             last_frame: now,
             frame_delta: FxDuration::from_millis(16),
@@ -747,6 +754,9 @@ impl App {
         let delta = now.duration_since(self.last_frame);
         self.last_frame = now;
         self.frame_delta = FxDuration::from_millis(delta.as_millis().min(250) as u32);
+        if self.activity.refresh(now) {
+            self.animating_until = now + Duration::from_secs(1);
+        }
 
         let mut apply_cards = false;
         for response in self.worker.drain() {
@@ -991,6 +1001,131 @@ impl App {
         if let Some(index) = self.views.iter().position(|view| view.id == id) {
             self.scope = index + 1;
         }
+    }
+
+    pub fn open_activity(&mut self) {
+        if self.wall {
+            return;
+        }
+        self.activity.open = true;
+        self.activity.mark_seen();
+        self.save_feed_seen();
+        let ids = self.activity_ids(self.activity.range);
+        self.activity.selected_id = ids.first().cloned();
+        self.last_input = Instant::now();
+    }
+
+    fn close_activity(&mut self) {
+        self.activity.open = false;
+    }
+
+    fn save_feed_seen(&self) {
+        if self.demo {
+            return;
+        }
+        let mut config = config::Config::load();
+        config.feed_seen_at = Some(self.activity.seen_at);
+        if let Err(err) = config.save() {
+            eprintln!("rc-tui: could not save activity cursor: {err}");
+        }
+    }
+
+    pub fn activity_entries(&self, range: Range) -> Vec<&Entry> {
+        let scope_id = self.scope_id().map(str::to_string);
+        let label = self.scope_label();
+        let now = chrono::Utc::now().timestamp_millis();
+        self.activity.entries_for(
+            scope_id.as_deref(),
+            &label,
+            self.activity.filter,
+            range,
+            now,
+        )
+    }
+
+    pub fn activity_entries_all(&self, range: Range) -> Vec<&Entry> {
+        let scope_id = self.scope_id().map(str::to_string);
+        let label = self.scope_label();
+        let now = chrono::Utc::now().timestamp_millis();
+        self.activity
+            .entries_for(scope_id.as_deref(), &label, Filter::All, range, now)
+    }
+
+    pub fn activity_unread(&self) -> usize {
+        let scope_id = self.scope_id().map(str::to_string);
+        let label = self.scope_label();
+        self.activity.unread_count(
+            scope_id.as_deref(),
+            &label,
+            chrono::Utc::now().timestamp_millis(),
+        )
+    }
+
+    pub fn activity_attention(&self) -> Option<&Entry> {
+        let scope_id = self.scope_id().map(str::to_string);
+        let label = self.scope_label();
+        self.activity.attention(
+            scope_id.as_deref(),
+            &label,
+            chrono::Utc::now().timestamp_millis(),
+        )
+    }
+
+    fn activity_ids(&self, range: Range) -> Vec<String> {
+        self.activity_entries(range)
+            .into_iter()
+            .map(|entry| entry.id.clone())
+            .collect()
+    }
+
+    fn activity_key(&mut self, key: KeyEvent) -> Intent {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('f') => {
+                self.close_activity();
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                let ids = self.activity_ids(self.activity.range);
+                self.activity.move_selection_ids(&ids, 1);
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                let ids = self.activity_ids(self.activity.range);
+                self.activity.move_selection_ids(&ids, -1);
+            }
+            KeyCode::Char('g') | KeyCode::Home => {
+                let ids = self.activity_ids(self.activity.range);
+                self.activity.selected_id = ids.first().cloned();
+            }
+            KeyCode::Char('G') | KeyCode::End => {
+                let ids = self.activity_ids(self.activity.range);
+                self.activity.selected_id = ids.last().cloned();
+            }
+            KeyCode::PageUp => {
+                let ids = self.activity_ids(self.activity.range);
+                self.activity.move_selection_ids(&ids, -10);
+            }
+            KeyCode::PageDown => {
+                let ids = self.activity_ids(self.activity.range);
+                self.activity.move_selection_ids(&ids, 10);
+            }
+            KeyCode::Tab => {
+                self.activity.filter = self.activity.filter.next();
+                let ids = self.activity_ids(self.activity.range);
+                self.activity.selected_id = ids.first().cloned();
+            }
+            KeyCode::Char('[') => {
+                self.activity.range = self.activity.range.previous();
+                let ids = self.activity_ids(self.activity.range);
+                self.activity.selected_id = ids.first().cloned();
+            }
+            KeyCode::Char(']') => {
+                self.activity.range = self.activity.range.next();
+                let ids = self.activity_ids(self.activity.range);
+                self.activity.selected_id = ids.first().cloned();
+            }
+            KeyCode::Char('?') => self.help = true,
+            _ => {}
+        }
+        Intent::None
     }
 
     pub fn open_picker(&mut self) {
@@ -1388,6 +1523,9 @@ impl App {
             }
             return Intent::None;
         }
+        if self.activity.open {
+            return self.activity_key(key);
+        }
         if self.detail.is_some() {
             return self.detail_key(key);
         }
@@ -1406,6 +1544,10 @@ impl App {
             }
             KeyCode::Char('p') => {
                 self.open_picker();
+                Intent::None
+            }
+            KeyCode::Char('f') => {
+                self.open_activity();
                 Intent::None
             }
             KeyCode::Char('?') => {
@@ -1797,6 +1939,8 @@ mod tests {
             pins: Vec::new(),
             ui_scale: 0,
             ui_page: 0,
+            feed_path: None,
+            feed_seen_at: None,
         }
     }
 
