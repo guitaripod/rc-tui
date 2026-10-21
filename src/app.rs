@@ -187,6 +187,7 @@ impl ProjectView {
 pub struct Trend {
     pub ratio: f64,
     pub change: f64,
+    pub long_ratio: Option<f64>,
 }
 
 #[derive(Debug, Clone)]
@@ -589,46 +590,41 @@ fn demo_salt(id: &str) -> u64 {
 }
 
 fn trend_for(id: &str, series: &[f64]) -> Option<Trend> {
-    if series.len() < 8 {
+    let complete = series.len().checked_sub(1)?;
+    if complete < 14 {
         return None;
     }
+    let series = &series[..complete];
     let last = series.len() - 1;
-    let flow = matches!(id, "revenue" | "new_customers" | "active_users");
-    if flow && series.len() < 14 {
+    let flow = matches!(id, "revenue" | "new_customers");
+    let recent = window_value(flow, &series[last - 6..=last]);
+    let previous = window_value(flow, &series[last - 13..=last - 7]);
+    let opening = window_value(flow, &series[..7]);
+    let long_ratio = if opening.abs() < 1e-9 {
+        None
+    } else {
+        Some((recent - opening) / opening.abs())
+    };
+    if recent.abs() < 1e-9 && previous.abs() < 1e-9 {
         return None;
     }
-    if flow {
-        let recent: f64 = series[last - 6..].iter().sum();
-        let previous: f64 = series[last - 13..=last - 7].iter().sum();
-        if recent.abs() < 1e-9 && previous.abs() < 1e-9 {
-            return None;
-        }
-        if previous.abs() < 1e-9 {
-            return Some(Trend {
-                ratio: f64::INFINITY,
-                change: recent,
-            });
-        }
-        Some(Trend {
-            ratio: (recent - previous) / previous,
-            change: recent - previous,
-        })
+    let ratio = if previous.abs() < 1e-9 {
+        f64::INFINITY
     } else {
-        let previous = series[last - 7];
-        let current = series[last];
-        if current.abs() < 1e-9 && previous.abs() < 1e-9 {
-            return None;
-        }
-        if previous.abs() < 1e-9 {
-            return Some(Trend {
-                ratio: f64::INFINITY,
-                change: current,
-            });
-        }
-        Some(Trend {
-            ratio: (current - previous) / previous,
-            change: current - previous,
-        })
+        (recent - previous) / previous.abs()
+    };
+    Some(Trend {
+        ratio,
+        change: recent - previous,
+        long_ratio,
+    })
+}
+
+fn window_value(flow: bool, values: &[f64]) -> f64 {
+    if flow {
+        values.iter().sum()
+    } else {
+        values.iter().sum::<f64>() / values.len() as f64
     }
 }
 
@@ -2319,6 +2315,33 @@ mod tests {
             detail.window = Window::D7;
         }
         assert_eq!(app.detail_values().len(), 7);
+    }
+
+    #[test]
+    fn trend_leaves_out_the_partial_current_day() {
+        let mut series = vec![50.0; 27];
+        for value in &mut series[13..20] {
+            *value = 100.0;
+        }
+        series.push(1.0);
+
+        let trend = trend_for("active_users", &series).expect("trend");
+        assert!(
+            (trend.ratio - -0.5).abs() < 1e-9,
+            "ratio was {}",
+            trend.ratio
+        );
+        assert!(
+            (trend.change - -50.0).abs() < 1e-9,
+            "change was {}",
+            trend.change
+        );
+    }
+
+    #[test]
+    fn trend_needs_two_complete_weeks() {
+        assert!(trend_for("active_users", &[10.0; 14]).is_none());
+        assert!(trend_for("active_users", &[10.0; 15]).is_some());
     }
 
     #[test]

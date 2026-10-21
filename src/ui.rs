@@ -2177,7 +2177,7 @@ fn draw_card(
         meta.push(Span::styled("   ·   ", Style::new().fg(theme::border())));
         meta.push(Span::styled(chip.0, Style::new().fg(chip.1)));
     }
-    if let Some(spans) = trend_spans(card, card.trend, currency, inner.width < 46) {
+    if let Some(spans) = trend_spans(card, card.trend, currency, inner.width) {
         meta.push(Span::styled("   ·   ", Style::new().fg(theme::border())));
         meta.extend(spans);
     }
@@ -2270,21 +2270,29 @@ fn trend_spans(
     card: &Card,
     trend: Option<Trend>,
     currency: &str,
-    short: bool,
+    width: u16,
 ) -> Option<Vec<Span<'static>>> {
     let trend = trend?;
-    if trend.ratio.is_finite() && trend.ratio.abs() < 0.005 && trend.change.abs() < 0.5 {
+    let short = width < 58;
+    let tiny = width < 42;
+    if trend.ratio.is_finite() && trend.ratio.abs() < 0.02 && trend.change.abs() < 0.5 {
         return Some(vec![Span::styled(
-            if short { "flat" } else { "flat vs last week" },
+            if short { "steady" } else { "steady this week" },
             Style::new().fg(theme::dim()),
         )]);
     }
-    let (arrow, color) = if trend.change >= 0.0 {
-        ("▲", theme::good())
+    let up = trend.change >= 0.0;
+    let month_up = trend.long_ratio.is_some_and(|ratio| ratio > 0.0);
+    let color = if up {
+        theme::good()
+    } else if month_up {
+        theme::dim()
     } else {
-        ("▼", theme::bad())
+        theme::bad()
     };
-    let value = if !trend.ratio.is_finite() {
+    let arrow = if up { "▲" } else { "▼" };
+    let percent = trend.ratio.is_finite();
+    let value = if !percent {
         match card.id.as_str() {
             "revenue" | "mrr" => format_metric(trend.change.abs().round(), "$", currency),
             _ => format!("{}", trend.change.abs().round() as i64),
@@ -2301,7 +2309,27 @@ fn trend_spans(
         Style::new().fg(color),
     )];
     if !short {
-        spans.push(Span::styled(" vs last week", Style::new().fg(theme::dim())));
+        spans.push(Span::styled(" this week", Style::new().fg(theme::dim())));
+    } else if percent && !matches!(card.id.as_str(), "revenue" | "new_customers") {
+        spans.push(Span::styled(" 7d", Style::new().fg(theme::dim())));
+    }
+    if !tiny
+        && let Some(month) = trend.long_ratio
+        && month.is_finite()
+        && month.abs() >= 0.02
+    {
+        spans.push(Span::styled(
+            if short { " · " } else { "   ·   " },
+            Style::new().fg(theme::border()),
+        ));
+        spans.push(Span::styled(
+            format!(
+                "{} {:.0}% 28d",
+                if month >= 0.0 { "▲" } else { "▼" },
+                month.abs() * 100.0
+            ),
+            Style::new().fg(theme::dim()),
+        ));
     }
     Some(spans)
 }
@@ -3045,7 +3073,7 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         key_line("g / G", "first / last"),
         Line::default(),
         dim_line("  Cards: RevenueCat overview values. Sparklines: 28 daily points."),
-        dim_line("  Trends: last 7 days vs the previous 7. * marks a partial total."),
+        dim_line("  Trends: the last 7 complete days vs the 7 before. * marks a partial total."),
         dim_line(
             "  UI scale, page, theme, wall, pins and the last project persist in config.toml.",
         ),
@@ -3104,7 +3132,7 @@ fn draw_detail(app: &App, frame: &mut Frame, area: Rect, now: Instant) {
             Style::new().fg(theme::dim()),
         ),
     ];
-    if let Some(spans) = trend_spans(card, card.trend, &app.currency, false) {
+    if let Some(spans) = trend_spans(card, card.trend, &app.currency, 120) {
         header_spans.push(Span::styled("   ·   ", Style::new().fg(theme::border())));
         header_spans.extend(spans);
     }
@@ -3300,14 +3328,17 @@ fn detail_trend(trend: Option<Trend>) -> (String, Color) {
     if !trend.ratio.is_finite() {
         return ("new".to_string(), theme::good());
     }
-    if trend.ratio.abs() < 0.005 {
-        return ("flat".to_string(), theme::dim());
+    if trend.ratio.abs() < 0.02 {
+        return ("steady".to_string(), theme::dim());
     }
     let arrow = if trend.change >= 0.0 { "▲" } else { "▼" };
+    let month_up = trend.long_ratio.is_some_and(|ratio| ratio > 0.0);
     (
         format!("{arrow} {:.0}%", trend.ratio.abs() * 100.0),
         if trend.change >= 0.0 {
             theme::good()
+        } else if month_up {
+            theme::dim()
         } else {
             theme::bad()
         },
