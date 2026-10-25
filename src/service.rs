@@ -3,17 +3,21 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+#[cfg(target_os = "linux")]
 use crate::config::{config_dir, data_dir};
 
 /// systemd user unit that runs `rc-tui watch` in the background.
 pub const UNIT: &str = "rc-tui-watch.service";
 #[cfg(any(target_os = "macos", test))]
 const LABEL: &str = "com.guitaripod.rc-tui.watch";
+#[cfg(any(target_os = "linux", test))]
 const DESKTOP_FILE: &str = "rc-tui.desktop";
+#[cfg(any(target_os = "linux", test))]
 const ICON_FILE: &str = "rc-tui.svg";
 #[cfg(any(target_os = "macos", test))]
 const WATCH_LOG_FILE: &str = "rc-tui-watch.log";
 
+#[cfg(any(target_os = "linux", test))]
 /// The 256x256 app icon: a dark rounded square with a green glow, a rim and a four-pointed sparkle.
 pub const ICON_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
   <defs>
@@ -154,6 +158,7 @@ fn unsupported() -> io::Error {
     io::Error::other("rc-tui watch --install supports Linux (systemd) and macOS (launchd)")
 }
 
+#[cfg(any(target_os = "linux", test))]
 /// The systemd user unit: runs `watch` at login, restarts it after failures and lowers its CPU priority.
 fn unit_text(exe: &Path) -> String {
     let exec = systemd_quote(&exe.to_string_lossy());
@@ -174,6 +179,7 @@ fn unit_text(exe: &Path) -> String {
     )
 }
 
+#[cfg(any(target_os = "linux", test))]
 /// The freedesktop launcher entry that starts the dashboard in a terminal.
 fn desktop_text(exe: &Path) -> String {
     format!(
@@ -228,6 +234,7 @@ fn plist_text(exe: &Path, log: &Path) -> String {
     )
 }
 
+#[cfg(any(target_os = "linux", test))]
 /// Quotes an `ExecStart=` argument for systemd, escaping the quote, backslash, `%` specifier and `$` variable characters.
 fn systemd_quote(value: &str) -> String {
     value
@@ -237,6 +244,7 @@ fn systemd_quote(value: &str) -> String {
         .replace('$', "$$")
 }
 
+#[cfg(any(target_os = "linux", test))]
 /// Formats an `Exec=` value: `%` is doubled, and a path with spaces is quoted with its reserved characters escaped.
 fn desktop_exec(exe: &Path) -> String {
     let path = exe.to_string_lossy().replace('%', "%%");
@@ -262,16 +270,19 @@ fn xml_escape(value: &str) -> String {
         .replace('\'', "&apos;")
 }
 
+#[cfg(any(target_os = "linux", test))]
 /// Where the systemd user unit lives under the XDG config directory.
 fn unit_path(config: &Path) -> PathBuf {
     config.join("systemd").join("user").join(UNIT)
 }
 
+#[cfg(any(target_os = "linux", test))]
 /// Where the launcher entry lives under the XDG data directory.
 fn desktop_path(data: &Path) -> PathBuf {
     data.join("applications").join(DESKTOP_FILE)
 }
 
+#[cfg(any(target_os = "linux", test))]
 /// Where the hicolor theme icon lives under the XDG data directory.
 fn icon_path(data: &Path) -> PathBuf {
     data.join("icons/hicolor/scalable/apps").join(ICON_FILE)

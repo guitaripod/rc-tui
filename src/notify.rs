@@ -2,15 +2,17 @@ use std::path::Path;
 
 use tokio::sync::mpsc::UnboundedSender;
 
-/// What someone did with a moment's notification.
+/// What someone did with a moment's notification; only the freedesktop server reports these.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub enum Action {
     Open(u32),
     Reply(u32, String),
     Closed(u32),
 }
 
-/// One desktop notification, independent of how the platform shows it.
+/// One desktop notification, independent of how the platform shows it; Notification Center ignores the attachments.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub struct Notice<'a> {
     pub summary: &'a str,
     pub body: &'a str,
