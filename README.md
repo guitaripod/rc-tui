@@ -34,6 +34,7 @@ feed, a project picker, 7/28/90-day detail and per-project health sit around it.
 ```sh
 cargo install --git https://github.com/guitaripod/rc-tui   # ~/.cargo/bin/rc-tui
 rc-tui --demo                 # look around without credentials
+rc-tui watch --install        # moments in the background, started now
 ```
 
 ## Setup
@@ -59,7 +60,7 @@ rc-tui --check    # validate every saved project: metrics and charts
 ## Keys
 
 ```text
-home        q quit · r refresh · p projects · f activity · Enter detail · ? help
+home        q quit · r refresh · p projects · f activity · m moments · Enter detail · ? help
             ! health · w wall · T light/dark · x export CSV · a add · i import · s setup
             ←→↑↓/Tab focus · + - UI scale · [ ] page
 picker      type to filter · ↑↓ · Enter open · Esc close
@@ -91,6 +92,99 @@ only new totals after storebot starts are definite events, not invented ones.
 rc-tui only reads the feed: it makes no extra RevenueCat, App Store or Telegram
 requests. Without storebot, the rail shows `NOT CONNECTED` and the metric
 dashboard is unaffected.
+
+## Moments
+
+![A moment card from rc-tui](docs/moment-card.png)
+
+`rc-tui watch` runs in the background and notices when something significant
+happens. The first time, it learns your history: every record, every country
+that ever bought, every app that has sold. Nothing fires until that is learned,
+so installing it never floods you with old news. After that, each significant
+thing becomes a moment.
+
+Moments are rare on purpose. A routine sale stays a quiet line in the feed, and
+the things worth stopping for get a card you can keep and a note about why it
+happened.
+
+What counts as a moment:
+
+- **Best day ever**: revenue across all your apps, today or yesterday, beats
+  every day before it.
+- **Best 28 days ever**: at most once every 28 days.
+- **Your `enough` line**: revenue reaches it. It re-arms once revenue falls
+  below 90% of the line.
+- **People milestones**: across all apps at 100, 250, 500, 1,000, 2,500 and
+  5,000, then 10,000 and up; per app at 1,000, 10,000 and 100,000.
+- **First sale** of an app.
+- **First purchase from a new country**.
+- **First yearly subscriber** of an app.
+- **Five-star reviews** with words in them.
+
+Two alerts are never kept as moments: a 1 or 2 star review, and storebot's
+activity feed going quiet for 15 minutes. When the feed is back, you get a note
+saying so.
+
+A moment lands in up to five places:
+
+- **A desktop notification** on Linux servers such as Plasma, GNOME, mako and
+  dunst, or in macOS Notification Center. On Plasma the card is attached, the
+  notification has an **Open rc-tui** action that opens the dashboard on that
+  moment, and an inline **Add a note** reply ("What made this happen?") that is
+  saved with the moment.
+- **A card**: a 2400×1350 PNG in your pictures folder (needs `rsvg-convert`).
+- **A chime** for major moments: a short tone, synthesized.
+- **Lights**: a slow pulse of your RGB hardware in the moment's color, through
+  the OpenRGB CLI. Your previous state is restored afterwards.
+- **A command** of your choice, such as a Telegram bot, which receives the text
+  and the card path.
+
+Major moments are best day, best 28 days, your `enough` line, people milestones
+and first sales. Only those get the chime and the lights. Nothing makes a sound
+or lights up during quiet hours (23-08 by default) or while do-not-disturb is
+on.
+
+In the dashboard, the newest moment of the week appears under the headline.
+Press `m` for the list of moments with notes, and Enter on a moment to open its
+card. A new moment shows a celebration banner while rc-tui is open.
+
+```sh
+rc-tui watch --install             # systemd user service (Linux) or launchd agent (macOS), desktop entry and icon; starts it
+rc-tui watch --uninstall           # remove it
+journalctl --user -u rc-tui-watch -f   # logs on Linux
+rc-tui watch                       # run in the foreground
+rc-tui watch --dry-run             # learn and print the records once; saves and notifies nothing
+rc-tui moments                     # list moments in the terminal
+rc-tui moments --test              # send a sample moment through every channel
+rc-tui moments --yearbook [YEAR]   # the year's moments as one tall poster
+rc-tui moments --card ID           # render a card again, for example after adding a note
+```
+
+The log is `~/.local/state/rc-tui/moments.jsonl`, one JSON object per line, with
+notes appended to it. The watcher's memory is
+`~/.local/state/rc-tui/moments-state.json`. Cards and yearbooks go to
+`~/Pictures/rc-tui` by default, taken from `user-dirs.dirs`.
+
+Everything is optional. These go in `config.toml`:
+
+```toml
+[moments]
+cards = "~/Pictures/rc-tui"        # where cards and yearbooks go
+quiet = "23-08"                    # no sound or lights; "off" to disable
+notify = true
+sound = true
+lights = true                      # OpenRGB, when installed
+lights_profile = "Lights off"      # OpenRGB profile to restore; otherwise the current state is saved first
+minutes = 15                       # how often RevenueCat is read
+command = ["~/Dev/storebot/storebot.py", "--send", "{text}", "--photo", "{card}"]
+terminal = ["ghostty", "-e"]       # what "Open rc-tui" launches; detected when unset
+```
+
+The `command` placeholders are `{text}` (the glyph, title, sentence and note),
+`{title}`, `{line}`, `{value}`, `{card}`, `{kind}` and `{id}`. The whole moment is
+also in the `RC_TUI_MOMENT` environment variable as JSON. The command runs only
+for moments nobody has announced yet. storebot already pings sales and reviews,
+so those skip it.
 
 ## Config
 

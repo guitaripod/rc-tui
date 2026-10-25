@@ -48,6 +48,12 @@ pub fn draw(app: &mut App, frame: &mut Frame) {
     if app.picker.is_some() {
         draw_picker(app, frame, area, now);
     }
+    if app.moments.open {
+        draw_moments(app, frame, area);
+        if let Some(celebration) = app.activity.current_celebration(now) {
+            draw_celebration(frame, area, celebration, now, app.motion);
+        }
+    }
     if app.help {
         draw_help(frame, area);
     }
@@ -1905,6 +1911,8 @@ fn blend_color(from: Color, to: Color, amount: f32) -> Color {
 fn celebration_color(tone: crate::activity::CelebrationTone) -> Color {
     match tone {
         crate::activity::CelebrationTone::Money => theme::money(),
+        crate::activity::CelebrationTone::People => theme::retention(),
+        crate::activity::CelebrationTone::World => theme::acquisition(),
         crate::activity::CelebrationTone::Stars => theme::warn(),
         crate::activity::CelebrationTone::Alert => theme::bad(),
         crate::activity::CelebrationTone::Quiet => theme::retention(),
@@ -1958,11 +1966,19 @@ fn draw_celebration(
         Block::default().style(Style::new().bg(blend_color(theme::surface(), accent, 0.38))),
         banner,
     );
-    let (value, _) = feed_value(&celebration.entry);
+    let value = match &celebration.entry {
+        Some(entry) => feed_value(entry).0,
+        None => celebration.value.clone(),
+    };
+    let lead = if celebration.entry.is_some() {
+        " ✦ "
+    } else {
+        " "
+    };
     let mut spans = vec![
-        Span::styled(" ✦ ", Style::new().fg(accent).add_modifier(Modifier::BOLD)),
+        Span::styled(lead, Style::new().fg(accent).add_modifier(Modifier::BOLD)),
         Span::styled(
-            celebration.headline,
+            celebration.headline.clone(),
             Style::new()
                 .fg(theme::bright())
                 .add_modifier(Modifier::BOLD),
@@ -1970,10 +1986,10 @@ fn draw_celebration(
         Span::styled("   ", Style::new()),
         Span::styled(value, Style::new().fg(accent).add_modifier(Modifier::BOLD)),
     ];
-    if area.width >= 120 {
+    if area.width >= 120 && !celebration.subject.is_empty() {
         spans.push(Span::styled("   ", Style::new()));
         spans.push(Span::styled(
-            celebration.entry.app.clone(),
+            celebration.subject.clone(),
             Style::new().fg(theme::text()),
         ));
     }
@@ -2296,7 +2312,228 @@ fn headline_lines(app: &App, now: Instant, compare: bool) -> Vec<Line<'static>> 
     if compare && let Some(line) = comparison_line(app) {
         lines.push(line);
     }
+    if compare && let Some(line) = moment_line(app) {
+        lines.push(line);
+    }
     lines
+}
+
+/// The newest moment of the past week under the headline, in its own colour, with the key that lists them all.
+fn moment_line(app: &App) -> Option<Line<'static>> {
+    let now = chrono::Utc::now().timestamp_millis();
+    let recent = crate::moments::recent(&app.moments.moments, now);
+    let newest = recent.first()?;
+    let accent = moment_color(newest.kind.tone());
+    let mut spans = vec![
+        Span::styled(
+            format!("{} ", newest.kind.glyph()),
+            Style::new().fg(accent).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            newest.title.clone(),
+            Style::new()
+                .fg(theme::bright())
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" · ", Style::new().fg(theme::dim())),
+        Span::styled(
+            crate::moments::plain(&newest.value),
+            Style::new().fg(accent).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!(" · {}", crate::moments::ago(newest.at, now)),
+            Style::new().fg(theme::dim()),
+        ),
+    ];
+    if recent.len() > 1 {
+        spans.push(Span::styled(
+            format!(" · {} more this week", recent.len() - 1),
+            Style::new().fg(theme::dim()),
+        ));
+    }
+    spans.push(Span::styled("   m moments", Style::new().fg(theme::dim())));
+    Some(Line::from(spans))
+}
+
+/// Fades everything already drawn so a modal reads as the only thing on screen.
+fn scrim(frame: &mut Frame, area: Rect) {
+    let background = theme::bg();
+    for y in area.y..area.bottom() {
+        for x in area.x..area.right() {
+            let Some(cell) = frame.buffer_mut().cell_mut((x, y)) else {
+                continue;
+            };
+            let foreground = blend_color(cell.fg, background, 0.7);
+            let fill = blend_color(cell.bg, background, 0.6);
+            cell.set_fg(foreground);
+            cell.set_bg(fill);
+        }
+    }
+}
+
+fn moment_color(tone: crate::moments::Tone) -> Color {
+    match tone {
+        crate::moments::Tone::Money => theme::money(),
+        crate::moments::Tone::People => theme::retention(),
+        crate::moments::Tone::World => theme::acquisition(),
+        crate::moments::Tone::Stars => theme::warn(),
+        crate::moments::Tone::Alert => theme::bad(),
+        crate::moments::Tone::Quiet => theme::dim(),
+    }
+}
+
+/// The moments list: every record, milestone and first, newest first, with notes and a way to open the card.
+fn draw_moments(app: &App, frame: &mut Frame, area: Rect) {
+    scrim(frame, area);
+    let width = area.width.saturating_sub(8).clamp(40, 112).min(area.width);
+    let height = area.height.saturating_sub(4).clamp(8, 40).min(area.height);
+    let rect = Rect {
+        x: area.x + (area.width.saturating_sub(width)) / 2,
+        y: area.y + (area.height.saturating_sub(height)) / 2,
+        width,
+        height,
+    };
+    frame.render_widget(Clear, rect);
+    let listed = app.moments.listed();
+    let block = Block::bordered()
+        .border_style(Style::new().fg(theme::border_strong()))
+        .style(Style::new().bg(theme::surface()))
+        .title(Line::from(vec![
+            Span::styled(
+                " ✦ Moments ",
+                Style::new()
+                    .fg(theme::bright())
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(format!("{} ", listed.len()), Style::new().fg(theme::dim())),
+        ]))
+        .title_bottom(Line::from(Span::styled(
+            " Enter open card   j/k move   m close ",
+            Style::new().fg(theme::dim()),
+        )));
+    let inner = block.inner(rect);
+    frame.render_widget(block, rect);
+    if listed.is_empty() {
+        let lines = vec![
+            Line::default(),
+            Line::from(Span::styled(
+                "  No moments yet.",
+                Style::new()
+                    .fg(theme::bright())
+                    .add_modifier(Modifier::BOLD),
+            )),
+            Line::default(),
+            Line::from(Span::styled(
+                "  Best days, enough reached, people milestones, first sales and new countries",
+                Style::new().fg(theme::text()),
+            )),
+            Line::from(Span::styled(
+                "  arrive here while the watcher runs in the background:",
+                Style::new().fg(theme::text()),
+            )),
+            Line::default(),
+            key_line("rc-tui watch --install", "start it now and at every login"),
+            key_line("rc-tui moments --test", "see what a moment looks like"),
+        ];
+        frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+        return;
+    }
+    let now = chrono::Utc::now().timestamp_millis();
+    let room = inner.width.saturating_sub(2) as usize;
+    let selected = app.moments.selected.min(listed.len() - 1);
+    let mut blocks: Vec<Vec<Line<'static>>> = Vec::new();
+    for (index, moment) in listed.iter().enumerate() {
+        let accent = moment_color(moment.kind.tone());
+        let chosen = index == selected;
+        let base = if chosen {
+            Style::new().bg(theme::selection())
+        } else {
+            Style::new()
+        };
+        let date = moment
+            .local_time()
+            .map(|time| time.format("%-d %b").to_string())
+            .unwrap_or_default();
+        let value = crate::moments::plain(&moment.value);
+        let left = format!(" {date:>6}  {} ", moment.kind.glyph());
+        let title_room = room.saturating_sub(left.chars().count() + value.chars().count() + 2);
+        let title = truncate(&moment.title, title_room);
+        let gap = room
+            .saturating_sub(left.chars().count() + title.chars().count() + value.chars().count())
+            .max(1);
+        let mut lines = vec![Line::from(vec![
+            Span::styled(format!(" {date:>6}  "), base.fg(theme::dim())),
+            Span::styled(
+                format!("{} ", moment.kind.glyph()),
+                base.fg(accent).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(title, base.fg(theme::bright()).add_modifier(Modifier::BOLD)),
+            Span::styled(" ".repeat(gap), base),
+            Span::styled(value, base.fg(accent).add_modifier(Modifier::BOLD)),
+            Span::styled(" ", base),
+        ])];
+        let indent = "           ";
+        let line = truncate(
+            &crate::moments::plain(&moment.line),
+            room.saturating_sub(indent.len()),
+        );
+        lines.push(Line::from(vec![
+            Span::styled(indent, base),
+            Span::styled(line, base.fg(theme::text())),
+        ]));
+        if let Some(note) = &moment.note {
+            lines.push(Line::from(vec![
+                Span::styled(indent, base),
+                Span::styled(
+                    truncate(&format!("“{note}”"), room.saturating_sub(indent.len())),
+                    base.fg(theme::dim()).add_modifier(Modifier::ITALIC),
+                ),
+            ]));
+        }
+        if chosen {
+            let mut meta = vec![crate::moments::ago(moment.at, now)];
+            if let Some(app) = &moment.app {
+                meta.push(app.clone());
+            }
+            meta.push(if moment.card.is_some() {
+                "Enter opens the card".to_string()
+            } else {
+                "no card".to_string()
+            });
+            lines.push(Line::from(vec![
+                Span::styled(indent, base),
+                Span::styled(
+                    truncate(&meta.join(" · "), room.saturating_sub(indent.len())),
+                    base.fg(theme::dim()),
+                ),
+            ]));
+        }
+        if chosen {
+            for line in &mut lines {
+                let used = line.width();
+                if used < room + 1 {
+                    line.spans
+                        .push(Span::styled(" ".repeat(room + 1 - used), base));
+                }
+            }
+        }
+        lines.push(Line::default());
+        blocks.push(lines);
+    }
+    let rows = inner.height as usize;
+    let mut start = 0;
+    let used_to =
+        |from: usize, to: usize| -> usize { blocks[from..=to].iter().map(Vec::len).sum() };
+    while start < selected && used_to(start, selected) > rows {
+        start += 1;
+    }
+    let lines: Vec<Line<'static>> = blocks[start..]
+        .iter()
+        .flatten()
+        .take(rows)
+        .cloned()
+        .collect();
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 /// Revenue and people against the 28 days before, in words: growth is lit, a dip is said plainly and quietly.
@@ -2587,7 +2824,7 @@ fn draw_garden(
     }
 }
 
-fn grouped(value: f64) -> String {
+pub(crate) fn grouped(value: f64) -> String {
     let rounded = value.round() as i64;
     let digits = rounded.unsigned_abs().to_string();
     let mut out = String::with_capacity(digits.len() + digits.len() / 3);
@@ -2600,7 +2837,7 @@ fn grouped(value: f64) -> String {
     if rounded < 0 { format!("-{out}") } else { out }
 }
 
-fn grouped_money(value: f64, currency: &str) -> String {
+pub(crate) fn grouped_money(value: f64, currency: &str) -> String {
     format!("{}{}", currency_symbol(currency), grouped(value))
 }
 
@@ -3278,6 +3515,17 @@ fn draw_footer(app: &App, frame: &mut Frame, area: Rect, now: Instant) {
     let [left, right] =
         Layout::horizontal([Constraint::Fill(1), Constraint::Length(38)]).areas(area);
 
+    if app.moments.open {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                " j/k move   Enter open card   m close   ? help",
+                Style::new().fg(theme::dim()),
+            ))),
+            left,
+        );
+        return;
+    }
+
     if app.activity.open {
         let (health, color) = feed_health(app);
         frame.render_widget(
@@ -3310,6 +3558,9 @@ fn draw_footer(app: &App, frame: &mut Frame, area: Rect, now: Instant) {
     } else if hints {
         let keys = match (app.demo, left.width) {
             (true, 56..) => " q quit   r refresh   p projects   f activity   ? help",
+            (false, 82..) => {
+                " q quit   r refresh   p projects   f activity   m moments   Enter detail   ? help"
+            }
             (false, 70..) => {
                 " q quit   r refresh   p projects   f activity   Enter detail   ? help"
             }
@@ -3667,6 +3918,7 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         key_line("r", "refresh now (forces charts)"),
         key_line("p", "project picker"),
         key_line("f", "open the activity feed"),
+        key_line("m", "moments: records, milestones and firsts"),
         key_line("← → / ↑ ↓ / Tab", "move card focus"),
         key_line("Enter", "metric detail"),
         key_line("!", "project health"),
@@ -3691,12 +3943,19 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         key_line("[ / ]", "24h / 7d / 28d / all"),
         key_line("g / G", "first / last"),
         Line::default(),
+        dim_line("  Moments"),
+        key_line("m / Esc", "close moments"),
+        key_line("Enter", "open the moment's card"),
+        Line::default(),
         dim_line("  People and revenue lead; subscriptions are one way to be paid, not the goal."),
         dim_line("  Trends: the last 28 complete days vs the 28 before, within 5% is steady."),
         dim_line(
             "  The faint line in People and Revenue is the 28 days before. * marks a partial total.",
         ),
         dim_line("  Set enough = <amount> in config.toml to draw your enough line."),
+        dim_line(
+            "  rc-tui watch --install turns records and firsts into moments, even with rc-tui closed.",
+        ),
         dim_line(
             "  UI scale, page, theme, wall, pins and the last project persist in config.toml.",
         ),

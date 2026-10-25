@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use chrono::{Days, Utc};
+use chrono::{Days, NaiveDate, Utc};
 use serde::Deserialize;
 use tokio::task::JoinSet;
 
@@ -386,11 +386,41 @@ impl Client {
             .collect())
     }
 
+    /// Daily revenue and purchase counts for the last `days` days across every store, oldest first.
+    pub async fn revenue_days(&self, days: u64) -> Result<Vec<(NaiveDate, f64, f64)>, Failure> {
+        let json = self.chart_json(REVENUE_CHART, true, days).await?;
+        Ok(days_from_chart(&json))
+    }
+
+    /// Names of the revenue chart segments (countries, product durations) with a purchase in the last `days` days.
+    pub async fn purchase_segments(
+        &self,
+        segment: &str,
+        days: u64,
+    ) -> Result<Vec<String>, Failure> {
+        let resolution = if days > 90 { "3" } else { "0" };
+        let json = self
+            .chart_query(REVENUE_CHART, true, days, resolution, Some(segment))
+            .await?;
+        Ok(segments_with_purchases(&json))
+    }
+
     async fn chart_json(
         &self,
         name: &str,
         monetary: bool,
         days: u64,
+    ) -> Result<serde_json::Value, Failure> {
+        self.chart_query(name, monetary, days, "0", None).await
+    }
+
+    async fn chart_query(
+        &self,
+        name: &str,
+        monetary: bool,
+        days: u64,
+        resolution: &str,
+        segment: Option<&str>,
     ) -> Result<serde_json::Value, Failure> {
         let end = Utc::now().date_naive();
         let start = end
@@ -404,12 +434,15 @@ impl Client {
         let end = end.format("%Y-%m-%d").to_string();
         let mut query = vec![
             ("realtime", "true"),
-            ("resolution", "0"),
+            ("resolution", resolution),
             ("start_date", start.as_str()),
             ("end_date", end.as_str()),
         ];
         if monetary {
             query.push(("currency", self.settings.currency.as_str()));
+        }
+        if let Some(segment) = segment {
+            query.push(("segment", segment));
         }
         let body = self.get(&url, &query).await?;
         serde_json::from_str(&body).map_err(|err| Failure {
@@ -621,6 +654,78 @@ fn series_from_chart(chart: &serde_json::Value, wanted: u64) -> Vec<f64> {
     points.into_iter().map(|(_, value)| value).collect()
 }
 
+/// Revenue (measure 0) and purchases (measure 1) per UTC day, oldest first.
+fn days_from_chart(chart: &serde_json::Value) -> Vec<(NaiveDate, f64, f64)> {
+    let mut days: std::collections::BTreeMap<i64, (f64, f64)> = std::collections::BTreeMap::new();
+    let Some(values) = chart.get("values").and_then(|value| value.as_array()) else {
+        return Vec::new();
+    };
+    for item in values {
+        let (Some(cohort), Some(value)) = (
+            item.get("cohort").and_then(|value| value.as_i64()),
+            item.get("value").and_then(|value| value.as_f64()),
+        ) else {
+            continue;
+        };
+        let slot = days.entry(cohort).or_default();
+        match item.get("measure").and_then(|value| value.as_u64()) {
+            Some(0) => slot.0 = value,
+            Some(TRANSACTIONS_MEASURE) => slot.1 = value,
+            _ => {}
+        }
+    }
+    days.into_iter()
+        .filter_map(|(cohort, (revenue, purchases))| {
+            chrono::DateTime::from_timestamp(cohort, 0)
+                .map(|time| (time.date_naive(), revenue, purchases))
+        })
+        .collect()
+}
+
+/// Display names of the non-total segments whose purchase count is above zero.
+fn segments_with_purchases(chart: &serde_json::Value) -> Vec<String> {
+    let Some(segments) = chart.get("segments").and_then(|value| value.as_array()) else {
+        return Vec::new();
+    };
+    let mut counts = vec![0.0; segments.len()];
+    for item in chart
+        .get("values")
+        .and_then(|value| value.as_array())
+        .into_iter()
+        .flatten()
+    {
+        if item.get("measure").and_then(|value| value.as_u64()) != Some(TRANSACTIONS_MEASURE) {
+            continue;
+        }
+        let Some(index) = item.get("segment").and_then(|value| value.as_u64()) else {
+            continue;
+        };
+        if let Some(slot) = counts.get_mut(index as usize) {
+            *slot += item
+                .get("value")
+                .and_then(|value| value.as_f64())
+                .unwrap_or(0.0);
+        }
+    }
+    segments
+        .iter()
+        .zip(counts)
+        .filter(|(segment, count)| {
+            *count > 0.0
+                && !segment
+                    .get("is_total")
+                    .and_then(|value| value.as_bool())
+                    .unwrap_or(false)
+        })
+        .filter_map(|(segment, _)| {
+            segment
+                .get("display_name")
+                .and_then(|value| value.as_str())
+                .map(str::to_string)
+        })
+        .collect()
+}
+
 pub fn aggregate_series(series: &[Vec<f64>]) -> Vec<f64> {
     let mut total: Vec<f64> = Vec::new();
     for values in series {
@@ -820,6 +925,40 @@ pub fn demo_snapshot(currency: &str, salt: u64) -> Snapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_dated_revenue_and_purchases() {
+        let chart = serde_json::json!({
+            "values": [
+                {"cohort": 1792886400, "measure": 0, "value": 12.5},
+                {"cohort": 1792886400, "measure": 1, "value": 2.0},
+                {"cohort": 1792800000, "measure": 0, "value": 4.0},
+                {"cohort": 1792800000, "measure": 2, "value": 99.0}
+            ]
+        });
+        let days = days_from_chart(&chart);
+        assert_eq!(days.len(), 2);
+        assert_eq!(days[0].0.to_string(), "2026-10-24");
+        assert_eq!((days[0].1, days[0].2), (4.0, 0.0));
+        assert_eq!((days[1].1, days[1].2), (12.5, 2.0));
+    }
+
+    #[test]
+    fn lists_segments_that_had_a_purchase() {
+        let chart = serde_json::json!({
+            "segments": [
+                {"display_name": "Total", "is_total": true},
+                {"display_name": "Japan", "is_total": false},
+                {"display_name": "Brazil", "is_total": false}
+            ],
+            "values": [
+                {"cohort": 1, "measure": 1, "segment": 0, "value": 3.0},
+                {"cohort": 1, "measure": 1, "segment": 1, "value": 1.0},
+                {"cohort": 1, "measure": 0, "segment": 2, "value": 9.0}
+            ]
+        });
+        assert_eq!(segments_with_purchases(&chart), vec!["Japan".to_string()]);
+    }
 
     #[test]
     fn redacts_all_but_the_last_four_characters() {

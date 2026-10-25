@@ -89,6 +89,8 @@ impl Range {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CelebrationTone {
     Money,
+    People,
+    World,
     Stars,
     Alert,
     Quiet,
@@ -102,15 +104,47 @@ pub enum CelebrationLevel {
 
 #[derive(Debug, Clone)]
 pub struct Celebration {
-    pub entry: Entry,
+    pub entry: Option<Entry>,
+    pub value: String,
+    pub subject: String,
     pub level: CelebrationLevel,
     pub tone: CelebrationTone,
-    pub headline: &'static str,
+    pub headline: String,
     pub started: Instant,
     pub duration: Duration,
 }
 
 impl Celebration {
+    /// The banner for a moment the watcher just logged: its title, its value and the app behind it.
+    pub fn for_moment(moment: &crate::moments::Moment) -> Self {
+        use crate::moments::{Level, Tone};
+        let level = if moment.level() == Level::Major {
+            CelebrationLevel::Major
+        } else {
+            CelebrationLevel::Minor
+        };
+        Self {
+            entry: None,
+            value: crate::moments::plain(&moment.value),
+            subject: moment.app.clone().unwrap_or_default(),
+            level,
+            tone: match moment.kind.tone() {
+                Tone::Money => CelebrationTone::Money,
+                Tone::People => CelebrationTone::People,
+                Tone::World => CelebrationTone::World,
+                Tone::Stars => CelebrationTone::Stars,
+                Tone::Alert => CelebrationTone::Alert,
+                Tone::Quiet => CelebrationTone::Quiet,
+            },
+            headline: format!("{} {}", moment.kind.glyph(), moment.title.to_uppercase()),
+            started: Instant::now(),
+            duration: match level {
+                CelebrationLevel::Major => Duration::from_millis(4200),
+                CelebrationLevel::Minor => Duration::from_millis(2400),
+            },
+        }
+    }
+
     pub fn progress(&self, now: Instant) -> Option<f32> {
         let elapsed = now.saturating_duration_since(self.started);
         if elapsed >= self.duration {
@@ -195,6 +229,8 @@ pub struct Purchase {
     pub currency: String,
     #[serde(default)]
     pub product: String,
+    #[serde(default)]
+    pub product_id: String,
     #[serde(default)]
     pub event: String,
     #[serde(default)]
@@ -759,10 +795,12 @@ fn celebration_for(entry: &Entry) -> Celebration {
         EntryKind::Unknown => ("ACTIVITY", CelebrationTone::Quiet, CelebrationLevel::Minor),
     };
     Celebration {
-        entry: entry.clone(),
+        entry: Some(entry.clone()),
+        value: String::new(),
+        subject: entry.app.clone(),
         level,
         tone,
-        headline,
+        headline: headline.to_string(),
         started: Instant::now(),
         duration: match level {
             CelebrationLevel::Major => Duration::from_millis(2600),
@@ -804,6 +842,7 @@ fn demo_entries(now: i64) -> Vec<Entry> {
                 first_today: false,
                 estimated: false,
                 transaction_id: id.to_string(),
+                ..Purchase::default()
             }),
             ..Entry::default()
         }

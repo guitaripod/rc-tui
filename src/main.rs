@@ -1,19 +1,27 @@
 mod activity;
 mod api;
 mod app;
+mod card;
+mod chime;
 mod config;
+mod countries;
 mod import;
+mod lights;
+mod moments;
+mod notify;
+mod service;
 mod setup;
 #[cfg(test)]
 mod snapshot;
 mod theme;
 mod ui;
+mod watch;
 
 use std::io::IsTerminal;
 use std::process::ExitCode;
 use std::time::Duration;
 
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{self, Event, KeyEventKind};
 use tokio::task::JoinSet;
@@ -77,6 +85,41 @@ struct Args {
     /// Bulk-add projects by pasting one secret key per line
     #[arg(long)]
     import: bool,
+
+    /// Open the dashboard on one moment (the notification's "Open rc-tui" uses this)
+    #[arg(long, value_name = "ID")]
+    moment: Option<String>,
+
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Watch in the background and turn records, milestones and firsts into moments
+    Watch {
+        /// Install and start the watcher as a login service (systemd user unit or launchd agent)
+        #[arg(long)]
+        install: bool,
+        /// Stop and remove the login service
+        #[arg(long)]
+        uninstall: bool,
+        /// Learn and print what would fire once, without saving or notifying
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// List your moments, render the yearbook, or send a sample through every channel
+    Moments {
+        /// Send a sample moment through every channel (notification, chime, lights, command)
+        #[arg(long)]
+        test: bool,
+        /// Render the year's moments as one poster (this year unless one is given)
+        #[arg(long, value_name = "YEAR", num_args = 0..=1, default_missing_value = "")]
+        yearbook: Option<String>,
+        /// Render a moment's card again, for example after adding a note
+        #[arg(long, value_name = "ID")]
+        card: Option<String>,
+    },
 }
 
 enum Control {
@@ -94,6 +137,9 @@ fn main() -> color_eyre::Result<ExitCode> {
 
     if args.check {
         return run_check(&args);
+    }
+    if let Some(command) = &args.command {
+        return run_command(command, &args);
     }
 
     let saved = Config::load();
@@ -160,6 +206,9 @@ fn main() -> color_eyre::Result<ExitCode> {
         let mut app = build_app(sources, &saved, &currency, &args);
         if let Some(id) = &scope_id {
             app.set_scope_by_id(id);
+        }
+        if let Some(id) = args.moment.as_deref() {
+            app.open_moments(Some(id));
         }
         let control = run_dashboard_once(&mut app)?;
         scope_id = app.scope_id().map(str::to_string);
@@ -251,6 +300,157 @@ fn build_app(sources: Vec<Source>, config: &Config, currency: &str, args: &Args)
         feed_seen_at: config.feed_seen_at,
         enough: config.enough.map(|amount| amount as f64),
     })
+}
+
+fn run_command(command: &Command, args: &Args) -> color_eyre::Result<ExitCode> {
+    let saved = Config::load();
+    let currency = resolve_currency(args.currency.as_deref(), saved.currency.as_deref());
+    match command {
+        Command::Watch { install: true, .. } => {
+            let exe = std::env::current_exe()?;
+            match service::install(&exe) {
+                Ok(lines) => {
+                    for line in lines {
+                        println!("{line}");
+                    }
+                    println!(
+                        "rc-tui watch is running. Logs: journalctl --user -u {} -f",
+                        service::UNIT
+                    );
+                    Ok(ExitCode::SUCCESS)
+                }
+                Err(err) => {
+                    eprintln!("rc-tui: {err}");
+                    Ok(ExitCode::FAILURE)
+                }
+            }
+        }
+        Command::Watch {
+            uninstall: true, ..
+        } => match service::uninstall() {
+            Ok(lines) => {
+                for line in lines {
+                    println!("{line}");
+                }
+                Ok(ExitCode::SUCCESS)
+            }
+            Err(err) => {
+                eprintln!("rc-tui: {err}");
+                Ok(ExitCode::FAILURE)
+            }
+        },
+        Command::Watch { dry_run, .. } => watch::run(watch::Options {
+            base_url: args.base_url.clone(),
+            currency,
+            dry_run: *dry_run,
+        }),
+        Command::Moments { test: true, .. } => watch::test(&currency),
+        Command::Moments {
+            yearbook: Some(year),
+            ..
+        } => {
+            let year = if year.is_empty() {
+                chrono::Datelike::year(&chrono::Local::now())
+            } else {
+                year.parse()?
+            };
+            let path = card::yearbook(
+                &moments::load(&moments::log_path()),
+                year,
+                &cards_dir(&saved),
+            )?;
+            println!("{}", path.display());
+            Ok(ExitCode::SUCCESS)
+        }
+        Command::Moments { card: Some(id), .. } => {
+            let all = moments::load(&moments::log_path());
+            let Some(moment) = all
+                .iter()
+                .rev()
+                .find(|moment| moment.id == *id || moment.id.starts_with(id.as_str()))
+            else {
+                eprintln!("rc-tui: no moment with id {id}. `rc-tui moments` lists them.");
+                return Ok(ExitCode::FAILURE);
+            };
+            let path = card::render(moment, &cards_dir(&saved))?;
+            println!("{}", path.display());
+            Ok(ExitCode::SUCCESS)
+        }
+        Command::Moments { .. } => {
+            print_moments();
+            Ok(ExitCode::SUCCESS)
+        }
+    }
+}
+
+fn cards_dir(config: &Config) -> std::path::PathBuf {
+    match config.moments.cards.as_deref() {
+        Some(dir) => match (dir.strip_prefix("~/"), std::env::var_os("HOME")) {
+            (Some(rest), Some(home)) => std::path::PathBuf::from(home).join(rest),
+            _ => std::path::PathBuf::from(dir),
+        },
+        None => config::pictures_dir().join("rc-tui"),
+    }
+}
+
+/// Prints every moment worth keeping, newest first, with its note and card, then whether the watcher runs.
+fn print_moments() {
+    let all = moments::load(&moments::log_path());
+    let kept: Vec<&moments::Moment> = all
+        .iter()
+        .rev()
+        .filter(|moment| moment.kind.keeps() && !moment.test)
+        .collect();
+    let color = std::io::stdout().is_terminal();
+    let paint = |code: &str, text: &str| {
+        if color {
+            format!("\x1b[{code}m{text}\x1b[0m")
+        } else {
+            text.to_string()
+        }
+    };
+    if kept.is_empty() {
+        if matches!(
+            service::status().as_deref(),
+            Some("active") | Some("loaded")
+        ) {
+            println!("No moments yet. The watcher is running; they arrive when something happens.");
+            return;
+        }
+        println!("No moments yet. They arrive while `rc-tui watch` runs:");
+        println!("  rc-tui watch --install    start it now and at every login");
+        println!("  rc-tui moments --test     see what one looks like");
+        return;
+    }
+    for moment in kept {
+        let date = moment
+            .local_time()
+            .map(|time| time.format("%-d %b %Y").to_string())
+            .unwrap_or_default();
+        let (red, green, blue) = card::tone_rgb(moment.kind.tone());
+        let accent = format!("1;38;2;{red};{green};{blue}");
+        println!(
+            "{}  {} {}  {}",
+            paint("2", &format!("{date:>11}")),
+            paint(&accent, moment.kind.glyph()),
+            paint("1", &moment.title),
+            paint(&accent, &moment.value)
+        );
+        println!("{}{}", " ".repeat(15), moment.line);
+        if let Some(note) = &moment.note {
+            println!("{}{}", " ".repeat(15), paint("3", &format!("“{note}”")));
+        }
+        if let Some(card) = &moment.card {
+            println!("{}{}", " ".repeat(15), paint("2", card));
+        }
+        println!("{}{}", " ".repeat(15), paint("2", &moment.id));
+        println!();
+    }
+    match service::status().as_deref() {
+        Some("active") | Some("loaded") => println!("The watcher is running."),
+        Some(state) => println!("The watcher is {state}. Start it with: rc-tui watch --install"),
+        None => {}
+    }
 }
 
 fn save_last_scope(scope: Option<&str>) {

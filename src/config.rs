@@ -46,6 +46,9 @@ pub struct Config {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enough: Option<u64>,
 
+    #[serde(default, skip_serializing_if = "MomentsConfig::is_empty")]
+    pub moments: MomentsConfig,
+
     #[serde(default)]
     pub projects: Vec<ProjectConfig>,
 
@@ -58,6 +61,43 @@ pub struct Config {
 
     #[serde(default, rename = "api_key", skip_serializing_if = "Option::is_none")]
     pub legacy_api_key: Option<String>,
+}
+
+/// How `rc-tui watch` tells you about a moment; every field is optional.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MomentsConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cards: Option<String>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quiet: Option<String>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notify: Option<bool>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sound: Option<bool>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lights: Option<bool>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lights_profile: Option<String>,
+
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub command: Vec<String>,
+
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub terminal: Vec<String>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub minutes: Option<u64>,
+}
+
+impl MomentsConfig {
+    pub fn is_empty(&self) -> bool {
+        self == &Self::default()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -193,7 +233,58 @@ pub fn data_dir() -> PathBuf {
     }
 }
 
-fn config_dir() -> PathBuf {
+/// `$XDG_STATE_HOME`, else `~/.local/state`: where the moments log and the watcher's memory live.
+pub fn state_dir() -> PathBuf {
+    if let Some(dir) = std::env::var_os("XDG_STATE_HOME") {
+        let dir = PathBuf::from(dir);
+        if dir.is_absolute() {
+            return dir;
+        }
+    }
+    match std::env::var_os("HOME") {
+        Some(home) => PathBuf::from(home).join(".local").join("state"),
+        None => PathBuf::from(".local").join("state"),
+    }
+}
+
+/// `$XDG_CACHE_HOME`, else `~/.cache`.
+pub fn cache_dir() -> PathBuf {
+    if let Some(dir) = std::env::var_os("XDG_CACHE_HOME") {
+        let dir = PathBuf::from(dir);
+        if dir.is_absolute() {
+            return dir;
+        }
+    }
+    match std::env::var_os("HOME") {
+        Some(home) => PathBuf::from(home).join(".cache"),
+        None => PathBuf::from(".cache"),
+    }
+}
+
+/// The user's pictures folder from `user-dirs.dirs`, else `~/Pictures`.
+pub fn pictures_dir() -> PathBuf {
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_default();
+    let dirs = config_dir().join("user-dirs.dirs");
+    if let Ok(text) = fs::read_to_string(dirs) {
+        for line in text.lines() {
+            if let Some(value) = line.trim().strip_prefix("XDG_PICTURES_DIR=") {
+                let value = value.trim().trim_matches('"');
+                let path = match value.strip_prefix("$HOME") {
+                    Some(rest) => home.join(rest.trim_start_matches('/')),
+                    None => PathBuf::from(value),
+                };
+                if path.is_absolute() {
+                    return path;
+                }
+            }
+        }
+    }
+    home.join("Pictures")
+}
+
+pub fn config_dir() -> PathBuf {
     if let Some(dir) = std::env::var_os("XDG_CONFIG_HOME") {
         let dir = PathBuf::from(dir);
         if dir.is_absolute() {

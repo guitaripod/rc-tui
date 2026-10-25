@@ -162,6 +162,10 @@ fn snapshots() {
     app.open_activity();
     render(&mut app, 200, 54, &dir.join("feed-200x54.svg"));
     app.activity.open = false;
+    app.open_moments(None);
+    render(&mut app, 200, 54, &dir.join("moments-200x54.svg"));
+    render(&mut app, 90, 28, &dir.join("moments-90x28.svg"));
+    app.moments.open = false;
 
     let mut plain = demo_app(None);
     plain.wall = true;

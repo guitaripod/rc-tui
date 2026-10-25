@@ -14,6 +14,7 @@ use tachyonfx::{
 use crate::activity::{Activity, Celebration, Entry, EntryKind, Filter, Range};
 use crate::api::{self, Client, Failure, OverviewMetric, Snapshot};
 use crate::config;
+use crate::moments::{self, Shelf};
 use crate::theme;
 
 const VALUE_TWEEN: Duration = Duration::from_millis(400);
@@ -719,6 +720,7 @@ pub struct App {
     pub ui_scale: u8,
     pub page: usize,
     pub activity: Activity,
+    pub moments: Shelf,
     pub enough: Option<f64>,
     worker: Worker,
     last_frame: Instant,
@@ -782,6 +784,7 @@ impl App {
             ui_scale: options.ui_scale.min(3),
             page: options.ui_page,
             activity,
+            moments: Shelf::new(moments::log_path(), demo, now),
             enough: options.enough.filter(|amount| *amount > 0.0),
             worker,
             last_frame: now,
@@ -818,6 +821,11 @@ impl App {
             {
                 self.activity.selected_id = Some(entry.id.clone());
             }
+        }
+
+        if let Some(moment) = self.moments.refresh(now).last() {
+            self.activity.celebration = Some(Celebration::for_moment(moment));
+            self.animating_until = now + Duration::from_secs(5);
         }
 
         let mut apply_cards = false;
@@ -1080,6 +1088,66 @@ impl App {
 
     fn close_activity(&mut self) {
         self.activity.open = false;
+    }
+
+    /// Opens the moments list, on one moment when an id is given (as "Open rc-tui" from a notification does).
+    pub fn open_moments(&mut self, id: Option<&str>) {
+        if self.wall {
+            return;
+        }
+        self.moments.open = true;
+        self.moments.selected = 0;
+        if let Some(id) = id {
+            self.moments.select_id(id);
+        }
+        self.last_input = Instant::now();
+    }
+
+    fn moments_key(&mut self, key: KeyEvent) -> Intent {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('m') => self.moments.open = false,
+            KeyCode::Char('j') | KeyCode::Down => self.moments.move_selection(1),
+            KeyCode::Char('k') | KeyCode::Up => self.moments.move_selection(-1),
+            KeyCode::Char('g') | KeyCode::Home => self.moments.selected = 0,
+            KeyCode::Char('G') | KeyCode::End => self.moments.move_selection(isize::MAX / 2),
+            KeyCode::PageDown => self.moments.move_selection(5),
+            KeyCode::PageUp => self.moments.move_selection(-5),
+            KeyCode::Enter | KeyCode::Char('o') => self.open_card(),
+            KeyCode::Char('?') => self.help = true,
+            _ => {}
+        }
+        Intent::None
+    }
+
+    /// Opens the selected moment's card in the default image viewer.
+    fn open_card(&mut self) {
+        let card = self
+            .moments
+            .selected_moment()
+            .and_then(|moment| moment.card.clone())
+            .filter(|card| std::path::Path::new(card).exists());
+        let Some(card) = card else {
+            self.notice = Some(("this moment has no card".to_string(), Instant::now()));
+            return;
+        };
+        let opener = if cfg!(target_os = "macos") {
+            "open"
+        } else {
+            "xdg-open"
+        };
+        let opened = std::process::Command::new(opener)
+            .arg(&card)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .is_ok();
+        let message = if opened {
+            "card opened".to_string()
+        } else {
+            format!("could not open {card}")
+        };
+        self.notice = Some((message, Instant::now()));
     }
 
     fn save_feed_seen(&self) {
@@ -1691,6 +1759,9 @@ impl App {
         if self.activity.open {
             return self.activity_key(key);
         }
+        if self.moments.open {
+            return self.moments_key(key);
+        }
         if self.detail.is_some() {
             return self.detail_key(key);
         }
@@ -1713,6 +1784,10 @@ impl App {
             }
             KeyCode::Char('f') => {
                 self.open_activity();
+                Intent::None
+            }
+            KeyCode::Char('m') => {
+                self.open_moments(None);
                 Intent::None
             }
             KeyCode::Char('?') => {
