@@ -43,6 +43,9 @@ pub struct Config {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub feed_seen_at: Option<i64>,
 
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enough: Option<u64>,
+
     #[serde(default)]
     pub projects: Vec<ProjectConfig>,
 

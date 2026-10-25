@@ -179,7 +179,11 @@ pub fn accent(id: &str) -> Color {
         acquisition()
     } else if id.contains("customer") || id.contains("active_user") {
         retention()
-    } else if id.contains("mrr") || id.contains("revenue") || id.contains("subscription") {
+    } else if id.contains("mrr")
+        || id.contains("revenue")
+        || id.contains("subscription")
+        || id.contains("purchase")
+    {
         money()
     } else {
         dim()

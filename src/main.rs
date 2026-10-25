@@ -4,6 +4,8 @@ mod app;
 mod config;
 mod import;
 mod setup;
+#[cfg(test)]
+mod snapshot;
 mod theme;
 mod ui;
 
@@ -21,6 +23,8 @@ use crate::app::{App, AppOptions, Intent, Motion, Source};
 use crate::config::{Config, ProjectConfig};
 use crate::import::{Action as ImportAction, Import};
 use crate::setup::{Action, Setup};
+
+const DEMO_ENOUGH: f64 = 3000.0;
 
 struct CheckOutcome {
     order: usize,
@@ -98,26 +102,13 @@ fn main() -> color_eyre::Result<ExitCode> {
     let cli_project = cli_project(&args)?;
 
     if args.demo {
-        let sources = vec![
-            Source::demo("MagicWeather", "proj_demo_1"),
-            Source::demo("Notes", "proj_demo_2"),
-            Source::demo("Habits", "proj_demo_3"),
-            Source::demo("Focus", "proj_demo_4"),
-            Source::demo("Budget", "proj_demo_5"),
-            Source::demo("Recipes", "proj_demo_6"),
-            Source::demo("Orbit", "proj_demo_7"),
-            Source::demo("Ledger", "proj_demo_8"),
-            Source::demo("Sketch", "proj_demo_9"),
-            Source::demo("Pulse", "proj_demo_10"),
-            Source::demo("Garden", "proj_demo_11"),
-            Source::demo("Atlas", "proj_demo_12"),
-            Source::demo("Ember", "proj_demo_13"),
-            Source::demo("Compass", "proj_demo_14"),
-            Source::demo("Vault", "proj_demo_15"),
-            Source::demo("Lumen", "proj_demo_16"),
-            Source::demo("Beacon", "proj_demo_17"),
-        ];
-        let app = build_app(sources, &saved, &currency, &args);
+        let sources = api::DEMO_PROJECTS
+            .iter()
+            .enumerate()
+            .map(|(index, name)| Source::demo(*name, format!("proj_demo_{}", index + 1)))
+            .collect();
+        let mut app = build_app(sources, &saved, &currency, &args);
+        app.enough.get_or_insert(DEMO_ENOUGH);
         return run_dashboard(app);
     }
 
@@ -258,6 +249,7 @@ fn build_app(sources: Vec<Source>, config: &Config, currency: &str, args: &Args)
         ui_page: config.ui_page.unwrap_or(0),
         feed_path: config.feed_path.as_ref().map(std::path::PathBuf::from),
         feed_seen_at: config.feed_seen_at,
+        enough: config.enough.map(|amount| amount as f64),
     })
 }
 
@@ -480,7 +472,7 @@ fn run_check(args: &Args) -> color_eyre::Result<ExitCode> {
                 let label = project.label().to_string();
                 let id = project.id;
                 let overview = client.fetch_overview().await;
-                let charts = client.fetch_range("trials", 7, false).await;
+                let charts = client.fetch_range("trials", 7, false, 0).await;
                 CheckOutcome {
                     order,
                     label,

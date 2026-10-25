@@ -11,7 +11,7 @@ use chrono::{Days, TimeZone};
 
 use crate::activity::{Celebration, CelebrationLevel, Entry, EntryKind, Filter, Health, Range};
 use crate::api::{DOCS_API_KEYS, Failure, SCOPE_CHARTS, SCOPE_OVERVIEW, SCOPE_PROJECTS, redact};
-use crate::app::{App, Card, Motion, RowState, Status, Trend, Window};
+use crate::app::{App, Card, Motion, PEOPLE, RowState, Status, Trend, Window, card_rank, is_flow};
 use crate::import::{Import, Stage as ImportStage};
 use crate::setup::{Setup, Stage};
 use crate::theme::{self, shade};
@@ -83,13 +83,14 @@ fn draw_dashboard(app: &mut App, frame: &mut Frame, area: Rect, now: Instant) {
 fn draw_header(app: &App, frame: &mut Frame, area: Rect, now: Instant) {
     let [left, right] =
         Layout::horizontal([Constraint::Fill(1), Constraint::Length(34)]).areas(area);
+    let gap = if area.width < 110 { "  " } else { "    " };
 
     let mut spans = vec![
         Span::styled(
             " RevenueCat",
             Style::new().fg(theme::dim()).add_modifier(Modifier::BOLD),
         ),
-        Span::styled("    ", Style::new()),
+        Span::styled(gap, Style::new()),
         Span::styled(
             app.scope_label().to_uppercase(),
             Style::new()
@@ -105,22 +106,25 @@ fn draw_header(app: &App, frame: &mut Frame, area: Rect, now: Instant) {
     }
     if app.scope == 0 && app.project_count() > 1 {
         spans.push(Span::styled(
-            format!("    {} projects", app.project_count()),
+            format!("{gap}{} projects", app.project_count()),
             Style::new().fg(theme::dim()),
         ));
     }
     spans.push(Span::styled(
-        format!("    {}", app.currency),
+        format!("{gap}{}", app.currency),
         Style::new().fg(theme::dim()),
     ));
     if app.ui_scale > 0 {
         spans.push(Span::styled(
-            format!("    {} / page", app.per_page()),
+            format!("{gap}{} / page", app.per_page()),
             Style::new().fg(theme::dim()),
         ));
     }
     if app.demo {
-        spans.push(Span::styled("    demo", Style::new().fg(theme::warn())));
+        spans.push(Span::styled(
+            format!("{gap}demo"),
+            Style::new().fg(theme::warn()),
+        ));
     }
     frame.render_widget(Paragraph::new(Line::from(spans)), left);
 
@@ -1979,6 +1983,11 @@ fn draw_celebration(
     );
 }
 
+const STEADY: f64 = 0.05;
+const HERO_MIN_HEIGHT: u16 = 20;
+const SUPPORT_MIN_WIDTH: u16 = 17;
+const GARDEN_COLUMN_WIDTH: u16 = 40;
+
 fn draw_cards(app: &mut App, frame: &mut Frame, area: Rect, now: Instant) {
     if app.cards.is_empty() {
         let lines = match &app.status {
@@ -2005,6 +2014,11 @@ fn draw_cards(app: &mut App, frame: &mut Frame, area: Rect, now: Instant) {
         Constraint::Length(1),
     ])
     .areas(grid);
+
+    app.rects.clear();
+    if app.ui_scale == 0 && draw_home(app, frame, grid, now) {
+        return;
+    }
 
     let visible = app.visible_indices();
     let columns = match app.ui_scale {
@@ -2033,42 +2047,561 @@ fn draw_cards(app: &mut App, frame: &mut Frame, area: Rect, now: Instant) {
     let row_areas = Layout::vertical(vec![Constraint::Fill(1); rows])
         .spacing(1)
         .split(grid);
-    let currency = app.currency.clone();
-    let partial = app.scope == 0 && app.partial();
-    let scoped_state = app
-        .scope
-        .checked_sub(1)
-        .and_then(|index| app.views.get(index))
-        .map(|view| view.state(now, app.stale_after()));
-    let focus_visible = app.focus_visible(now);
-    app.rects.clear();
+    let mut cells = Vec::new();
     for (position, index) in visible.iter().copied().enumerate() {
         let row = position / columns;
         let column = position % columns;
         if row >= row_areas.len() {
             break;
         }
-        let cells = Layout::horizontal(vec![Constraint::Fill(1); columns])
+        let row_cells = Layout::horizontal(vec![Constraint::Fill(1); columns])
             .spacing(1)
             .split(row_areas[row]);
-        if let Some(cell) = cells.get(column)
-            && let Some(card) = app.cards.get(index)
-        {
+        if let Some(cell) = row_cells.get(column) {
+            cells.push((index, *cell, false));
+        }
+    }
+    draw_card_set(app, frame, &cells, now);
+}
+
+/// Draws the cards at their cells; `hero` cards get the previous-period ghost and the large type.
+fn draw_card_set(app: &mut App, frame: &mut Frame, cells: &[(usize, Rect, bool)], now: Instant) {
+    let currency = app.currency.clone();
+    let partial = app.scope == 0 && app.partial();
+    let scoped = app.scope > 0 || app.project_count() == 1;
+    let scoped_state = app
+        .scope
+        .checked_sub(1)
+        .and_then(|index| app.views.get(index))
+        .map(|view| view.state(now, app.stale_after()));
+    let focus_visible = app.focus_visible(now);
+    for (index, cell, hero) in cells.iter().copied() {
+        if let Some(card) = app.cards.get(index) {
             draw_card(
                 frame,
                 card,
-                *cell,
+                cell,
                 &mut app.rects,
                 now,
                 CardView {
                     currency: &currency,
                     partial,
+                    scoped,
                     scoped_state,
                     focused: focus_visible && app.focus == index,
+                    hero,
                 },
             );
         }
     }
+}
+
+/// The auto layout: a sentence about people and money, the enough line, People and Revenue as heroes,
+/// the subscription details as a quieter row, and every app below when there is room.
+fn draw_home(app: &mut App, frame: &mut Frame, area: Rect, now: Instant) -> bool {
+    let (hero, support): (Vec<usize>, Vec<usize>) =
+        (0..app.cards.len()).partition(|index| card_rank(&app.cards[*index].id) <= 1);
+    if hero.is_empty() || area.height < 12 || area.width < 40 {
+        return false;
+    }
+
+    let headline = if area.height >= 18 {
+        headline_lines(app, now, area.height >= 22)
+    } else {
+        Vec::new()
+    };
+    let headline_height = if headline.is_empty() {
+        0
+    } else {
+        wrapped_height(&headline, area.width) + 1
+    };
+    let enough_height = if enough_applies(app) && area.height >= 20 {
+        2
+    } else {
+        0
+    };
+    let widest = support
+        .len()
+        .min((area.width / SUPPORT_MIN_WIDTH).max(1) as usize)
+        .max(1);
+    let support_rows = support.len().div_ceil(widest) as u16;
+    let support_columns = support.len().div_ceil(support_rows.max(1) as usize).max(1);
+    let support_card = if area.height >= 40 {
+        9
+    } else if area.height >= 28 {
+        7
+    } else {
+        5
+    };
+    let support_height = support_rows * (support_card + 1);
+    let fixed = headline_height + enough_height + support_height;
+    if area.height < fixed + 8 {
+        return false;
+    }
+
+    let garden = app.garden_rows();
+    let garden_columns = (area.width / GARDEN_COLUMN_WIDTH).clamp(1, 4) as usize;
+    let garden_needed = if app.scope == 0 && garden.len() > 1 {
+        2 + garden.len().div_ceil(garden_columns) as u16
+    } else {
+        0
+    };
+    let garden_room = area.height.saturating_sub(fixed + HERO_MIN_HEIGHT);
+    let garden_height = if garden_needed > 0 && garden_room >= 5 {
+        garden_needed.min(garden_room)
+    } else {
+        0
+    };
+
+    let [
+        headline_area,
+        enough_area,
+        hero_area,
+        support_area,
+        garden_area,
+    ] = Layout::vertical([
+        Constraint::Length(headline_height),
+        Constraint::Length(enough_height),
+        Constraint::Fill(1),
+        Constraint::Length(support_height),
+        Constraint::Length(garden_height),
+    ])
+    .areas(area);
+
+    if !headline.is_empty() {
+        frame.render_widget(
+            Paragraph::new(headline).wrap(Wrap { trim: true }),
+            Rect {
+                x: headline_area.x + 1,
+                width: headline_area.width.saturating_sub(2),
+                ..headline_area
+            },
+        );
+    }
+    if enough_height > 0 {
+        draw_enough(app, frame, enough_area, now);
+    }
+
+    let mut cells: Vec<(usize, Rect, bool)> = Vec::new();
+    let hero_cells = Layout::horizontal(vec![Constraint::Fill(1); hero.len()])
+        .spacing(1)
+        .split(hero_area);
+    for (index, cell) in hero.iter().zip(hero_cells.iter()) {
+        cells.push((*index, *cell, true));
+    }
+    if support_height > 0 {
+        let support_area = Rect {
+            y: support_area.y + 1,
+            height: support_area.height.saturating_sub(1),
+            ..support_area
+        };
+        let rows = Layout::vertical(vec![Constraint::Fill(1); support_rows as usize])
+            .spacing(1)
+            .split(support_area);
+        for (row, chunk) in support.chunks(support_columns).enumerate() {
+            let Some(row_area) = rows.get(row) else {
+                break;
+            };
+            let row_cells = Layout::horizontal(vec![Constraint::Fill(1); support_columns])
+                .spacing(1)
+                .split(*row_area);
+            for (index, cell) in chunk.iter().zip(row_cells.iter()) {
+                cells.push((*index, *cell, false));
+            }
+        }
+    }
+    draw_card_set(app, frame, &cells, now);
+
+    if garden_height > 0 {
+        draw_garden(app, frame, garden_area, &garden, garden_columns);
+    }
+    true
+}
+
+fn enough_applies(app: &App) -> bool {
+    app.enough.is_some() && (app.scope == 0 || app.project_count() == 1)
+}
+
+fn people_word(count: f64) -> &'static str {
+    if count.round() as i64 == 1 {
+        "person"
+    } else {
+        "people"
+    }
+}
+
+/// The home sentence: how many people your work reached and what they paid, then how that compares.
+fn headline_lines(app: &App, now: Instant, compare: bool) -> Vec<Line<'static>> {
+    let people = app.card(&PEOPLE);
+    let revenue = app.card(&["revenue"]);
+    let purchases = app
+        .card(&[crate::api::PURCHASES])
+        .map(|card| card.value.value(now));
+    let subject = if app.scope == 0 && app.project_count() > 1 {
+        "your apps".to_string()
+    } else {
+        app.scope_label()
+    };
+    let words = Style::new().fg(theme::text());
+    let number = |id: &str| Style::new().fg(accent(id)).add_modifier(Modifier::BOLD);
+
+    let mut sentence: Vec<Span<'static>> = vec![];
+    match (people, revenue) {
+        (Some(people), revenue) => {
+            let count = people.value.value(now);
+            sentence.push(Span::styled(grouped(count), number(&people.id)));
+            sentence.push(Span::styled(
+                format!(" {} used ", people_word(count)),
+                words,
+            ));
+            sentence.push(Span::styled(subject, words.add_modifier(Modifier::BOLD)));
+            sentence.push(Span::styled(" in the last 28 days", words));
+            if let Some(revenue) = revenue.filter(|card| card.value.target() > 0.0) {
+                sentence.push(Span::styled(" and paid ", words));
+                sentence.push(Span::styled(
+                    grouped_money(revenue.value.value(now), &app.currency),
+                    number("revenue"),
+                ));
+                if let Some(purchases) = purchases.filter(|count| *count >= 1.0) {
+                    sentence.push(Span::styled(" across ", words));
+                    sentence.push(Span::styled(grouped(purchases), number("revenue")));
+                    sentence.push(Span::styled(
+                        if purchases.round() as i64 == 1 {
+                            " purchase"
+                        } else {
+                            " purchases"
+                        },
+                        words,
+                    ));
+                }
+            }
+            sentence.push(Span::styled(".", words));
+        }
+        (None, Some(revenue)) => {
+            sentence.push(Span::styled(
+                format!("{} ", capitalize(&subject)),
+                words.add_modifier(Modifier::BOLD),
+            ));
+            sentence.push(Span::styled("earned ", words));
+            sentence.push(Span::styled(
+                grouped_money(revenue.value.value(now), &app.currency),
+                number("revenue"),
+            ));
+            sentence.push(Span::styled(" in the last 28 days.", words));
+        }
+        (None, None) => return Vec::new(),
+    }
+
+    let mut lines = vec![Line::from(sentence)];
+    if compare && let Some(line) = comparison_line(app) {
+        lines.push(line);
+    }
+    lines
+}
+
+/// Revenue and people against the 28 days before, in words: growth is lit, a dip is said plainly and quietly.
+fn comparison_line(app: &App) -> Option<Line<'static>> {
+    let quiet = Style::new().fg(theme::dim());
+    let revenue = app.card(&["revenue"]);
+    if let Some(card) = revenue
+        && card.value.target() <= 0.0
+        && card.trend.is_none()
+    {
+        return Some(Line::from(Span::styled(
+            "No purchases yet. Every app starts here.",
+            quiet,
+        )));
+    }
+    let mut clauses: Vec<Vec<Span<'static>>> = Vec::new();
+    let mut days = crate::api::COMPARE_DAYS;
+    if let Some(trend) = revenue.and_then(|card| card.trend) {
+        days = trend.days;
+        clauses.push(change_clause(trend, "revenue", "more", "less"));
+    }
+    if let Some(trend) = app.card(&PEOPLE).and_then(|card| card.trend) {
+        days = trend.days;
+        clauses.push(change_clause(trend, "people", "more", "fewer"));
+    }
+    if clauses.is_empty() {
+        return None;
+    }
+    let mut spans = vec![Span::styled(
+        format!("Against the {days} days before: "),
+        quiet,
+    )];
+    for (position, clause) in clauses.into_iter().enumerate() {
+        if position > 0 {
+            spans.push(Span::styled(", ", quiet));
+        }
+        spans.extend(clause);
+    }
+    spans.push(Span::styled(".", quiet));
+    Some(Line::from(spans))
+}
+
+fn change_clause(
+    trend: Trend,
+    noun: &'static str,
+    more: &'static str,
+    less: &'static str,
+) -> Vec<Span<'static>> {
+    let quiet = Style::new().fg(theme::dim());
+    if !trend.ratio.is_finite() {
+        return vec![
+            Span::styled(noun, quiet),
+            Span::styled(" up from none", Style::new().fg(theme::good())),
+        ];
+    }
+    if trend.ratio.abs() < STEADY {
+        return vec![Span::styled(format!("{noun} steady"), quiet)];
+    }
+    let label = change_label(trend);
+    if trend.change > 0.0 {
+        let words = if label.ends_with('×') {
+            format!(" the {noun}")
+        } else {
+            format!(" {more} {noun}")
+        };
+        vec![
+            Span::styled(
+                label,
+                Style::new().fg(theme::good()).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(words, quiet),
+        ]
+    } else {
+        vec![
+            Span::styled(label, quiet),
+            Span::styled(format!(" {less} {noun}"), quiet),
+        ]
+    }
+}
+
+/// A relative change in words people feel: a doubling or more reads as a multiple, anything less as a percent.
+fn change_label(trend: Trend) -> String {
+    let factor = 1.0 + trend.ratio;
+    if trend.ratio >= 1.0 && factor < 10.0 {
+        format!("{factor:.1}×")
+    } else if trend.ratio >= 1.0 {
+        format!("{factor:.0}×")
+    } else {
+        format!("{:.0}%", trend.ratio.abs() * 100.0)
+    }
+}
+
+fn capitalize(text: &str) -> String {
+    let mut characters = text.chars();
+    match characters.next() {
+        Some(first) => first.to_uppercase().chain(characters).collect(),
+        None => String::new(),
+    }
+}
+
+/// A line toward the revenue that covers your life; past it, the rest is room to make things.
+fn draw_enough(app: &App, frame: &mut Frame, area: Rect, now: Instant) {
+    let (Some(enough), Some(revenue)) = (app.enough, app.card(&["revenue"])) else {
+        return;
+    };
+    let earned = revenue.value.value(now).max(0.0);
+    let share = earned / enough;
+    let reached = share >= 1.0;
+    let ink = if reached {
+        theme::good()
+    } else {
+        accent("revenue")
+    };
+    let label = if reached {
+        " ENOUGH ✓ "
+    } else {
+        " ENOUGH   "
+    };
+    let detail = if reached {
+        format!(
+            "  {} of {} · {} beyond enough ",
+            grouped_money(earned, &app.currency),
+            grouped_money(enough, &app.currency),
+            grouped_money(earned - enough, &app.currency)
+        )
+    } else {
+        format!(
+            "  {:.0}% · {} of {} ",
+            (share * 100.0).floor(),
+            grouped_money(earned, &app.currency),
+            grouped_money(enough, &app.currency)
+        )
+    };
+    let bar_width =
+        (area.width as usize).saturating_sub(text_width(label) + text_width(&detail) + 1);
+    let filled = ((share.min(1.0)) * bar_width as f64).round() as usize;
+    let line = Line::from(vec![
+        Span::styled(
+            label,
+            Style::new().fg(theme::dim()).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("━".repeat(filled), Style::new().fg(ink)),
+        Span::styled(
+            "─".repeat(bar_width.saturating_sub(filled)),
+            Style::new().fg(theme::border_strong()),
+        ),
+        Span::styled(
+            detail,
+            Style::new().fg(if reached {
+                theme::good()
+            } else {
+                theme::text()
+            }),
+        ),
+    ]);
+    frame.render_widget(Paragraph::new(line), Rect { height: 1, ..area });
+}
+
+/// Every app, most people first, with a bar for the people it reached and what they paid.
+fn draw_garden(
+    app: &App,
+    frame: &mut Frame,
+    area: Rect,
+    rows: &[crate::app::GardenRow],
+    columns: usize,
+) {
+    if area.height < 3 || rows.is_empty() {
+        return;
+    }
+    let area = Rect {
+        y: area.y + 1,
+        height: area.height - 1,
+        ..area
+    };
+    let title = Line::from(vec![
+        Span::styled(
+            " YOUR APPS",
+            Style::new().fg(theme::dim()).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!("   {} · most people first", rows.len()),
+            Style::new().fg(theme::dim()),
+        ),
+    ]);
+    frame.render_widget(Paragraph::new(title), Rect { height: 1, ..area });
+
+    let capacity = (area.height as usize - 1) * columns;
+    let per_column = rows.len().min(capacity).div_ceil(columns);
+    let overflow = rows.len().saturating_sub(capacity);
+    let shown = if overflow > 0 {
+        capacity - 1
+    } else {
+        rows.len()
+    };
+    let top = rows
+        .iter()
+        .filter_map(|row| row.people)
+        .fold(0.0_f64, f64::max)
+        .max(1.0);
+    let column_areas = Layout::horizontal(vec![Constraint::Fill(1); columns])
+        .spacing(2)
+        .split(Rect {
+            y: area.y + 1,
+            height: area.height - 1,
+            ..area
+        });
+    let people_ink = accent(PEOPLE[0]);
+    let longest = rows
+        .iter()
+        .map(|row| text_width(&row.label))
+        .max()
+        .unwrap_or(6);
+    for (position, row) in rows.iter().take(shown).enumerate() {
+        let column = position / per_column.max(1);
+        let Some(column_area) = column_areas.get(column) else {
+            break;
+        };
+        let y = column_area.y + (position % per_column.max(1)) as u16;
+        let width = column_area.width as usize;
+        let numbers_width = 16;
+        let name_width = longest
+            .clamp(6, 18)
+            .min(width.saturating_sub(numbers_width + 6));
+        let bar_width = width
+            .saturating_sub(name_width + numbers_width + 2)
+            .clamp(2, 20);
+        let people = row.people.unwrap_or(0.0);
+        let halves = ((people / top).sqrt() * (bar_width * 2) as f64).round() as usize;
+        let mut bar = "━".repeat(halves / 2);
+        if halves % 2 == 1 || (people > 0.0 && halves == 0) {
+            bar.push('╸');
+        }
+        let name_ink = match row.state {
+            RowState::Live => theme::text(),
+            RowState::Stale => theme::warn(),
+            RowState::Failed => theme::bad(),
+        };
+        let revenue = row.revenue.unwrap_or(0.0);
+        let line = Line::from(vec![
+            Span::styled(
+                format!(" {:<name_width$}", truncate(&row.label, name_width)),
+                Style::new().fg(name_ink),
+            ),
+            Span::styled(format!(" {bar:<bar_width$}"), Style::new().fg(people_ink)),
+            Span::styled(
+                format!("{:>7}", row.people.map_or("—".to_string(), grouped)),
+                Style::new().fg(theme::bright()),
+            ),
+            Span::styled(
+                format!(
+                    "{:>9}",
+                    row.revenue.map_or("—".to_string(), |value| grouped_money(
+                        value,
+                        &app.currency
+                    ))
+                ),
+                Style::new().fg(if revenue > 0.0 {
+                    accent("revenue")
+                } else {
+                    theme::dim()
+                }),
+            ),
+        ]);
+        frame.render_widget(
+            Paragraph::new(line),
+            Rect {
+                y,
+                height: 1,
+                ..*column_area
+            },
+        );
+    }
+    if overflow > 0
+        && let Some(column_area) = column_areas.last()
+    {
+        let y = column_area.y + (per_column.max(1) as u16).saturating_sub(1);
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                format!(" +{} more · p projects", overflow + 1),
+                Style::new().fg(theme::dim()),
+            )),
+            Rect {
+                y,
+                height: 1,
+                ..*column_area
+            },
+        );
+    }
+}
+
+fn grouped(value: f64) -> String {
+    let rounded = value.round() as i64;
+    let digits = rounded.unsigned_abs().to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, character) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(character);
+    }
+    if rounded < 0 { format!("-{out}") } else { out }
+}
+
+fn grouped_money(value: f64, currency: &str) -> String {
+    format!("{}{}", currency_symbol(currency), grouped(value))
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -2081,8 +2614,47 @@ enum ValueSize {
 struct CardView<'a> {
     currency: &'a str,
     partial: bool,
+    scoped: bool,
     scoped_state: Option<RowState>,
     focused: bool,
+    hero: bool,
+}
+
+fn card_title(card: &Card) -> String {
+    match card.id.as_str() {
+        "active_users" | "active_customers" => "PEOPLE".to_string(),
+        "revenue" => "REVENUE".to_string(),
+        "new_customers" => "FOUND YOU".to_string(),
+        crate::api::PURCHASES => "PURCHASES".to_string(),
+        "active_subscriptions" => "SUBSCRIBERS".to_string(),
+        "mrr" => "RECURRING".to_string(),
+        "active_trials" => "IN TRIAL".to_string(),
+        _ => card.name.to_uppercase(),
+    }
+}
+
+/// The days a card's chart shows, plus the stretch before them for the ghost: flow metrics drop today's partial day.
+fn chart_window(card: &Card, values: &[f64]) -> (Vec<f64>, Option<Vec<f64>>) {
+    let days = crate::api::COMPARE_DAYS;
+    let complete = if is_flow(&card.id) && values.len() > 2 {
+        &values[..values.len() - 1]
+    } else {
+        values
+    };
+    let shown = days.min(complete.len());
+    let split = complete.len() - shown;
+    let ghost = (split >= shown && shown >= 2).then(|| smooth(&complete[split - shown..split]));
+    (complete[split..].to_vec(), ghost)
+}
+
+/// A centred weekly mean, so the previous period reads as a level to beat rather than a second set of spikes.
+fn smooth(values: &[f64]) -> Vec<f64> {
+    (0..values.len())
+        .map(|index| {
+            let window = &values[index.saturating_sub(3)..(index + 4).min(values.len())];
+            window.iter().sum::<f64>() / window.len() as f64
+        })
+        .collect()
 }
 
 fn draw_card(
@@ -2096,8 +2668,10 @@ fn draw_card(
     let CardView {
         currency,
         partial,
+        scoped,
         scoped_state,
         focused,
+        hero,
     } = view;
     rects.insert(card.id.clone(), area);
 
@@ -2106,13 +2680,17 @@ fn draw_card(
         Span::raw(" "),
         Span::styled("● ", Style::new().fg(accent)),
         Span::styled(
-            card.name.to_uppercase(),
-            Style::new().fg(theme::dim()).add_modifier(Modifier::BOLD),
+            card_title(card),
+            Style::new()
+                .fg(if hero { theme::text() } else { theme::dim() })
+                .add_modifier(Modifier::BOLD),
         ),
         Span::raw(" "),
     ]);
     let border = if focused {
         theme::bright()
+    } else if hero {
+        theme::border_strong()
     } else {
         theme::border()
     };
@@ -2153,19 +2731,13 @@ fn draw_card(
     let [value_area, chart_area] =
         Layout::vertical([Constraint::Length(value_height), Constraint::Fill(1)]).areas(inner);
 
-    let mut meta = vec![Span::raw("  ")];
-    if size != ValueSize::Compact
-        && let Some(symbol) = money_symbol(card, currency)
-    {
-        meta.push(Span::styled(
-            format!("{symbol} "),
+    let mut meta = vec![
+        Span::raw("  "),
+        Span::styled(
+            card_period(card, currency, scoped),
             Style::new().fg(theme::dim()),
-        ));
-    }
-    meta.push(Span::styled(
-        card_period(card),
-        Style::new().fg(theme::dim()),
-    ));
+        ),
+    ];
     if partial {
         meta.push(Span::styled("*", Style::new().fg(theme::warn())));
     }
@@ -2177,7 +2749,14 @@ fn draw_card(
         meta.push(Span::styled("   ·   ", Style::new().fg(theme::border())));
         meta.push(Span::styled(chip.0, Style::new().fg(chip.1)));
     }
-    if let Some(spans) = trend_spans(card, card.trend, currency, inner.width) {
+    let value_text = if money(card, currency) {
+        grouped_money(value, currency)
+    } else {
+        grouped(value)
+    };
+    if size != ValueSize::Compact
+        && let Some(spans) = trend_spans(card, card.trend, currency, inner.width)
+    {
         meta.push(Span::styled("   ·   ", Style::new().fg(theme::border())));
         meta.extend(spans);
     }
@@ -2204,15 +2783,22 @@ fn draw_card(
             frame.render_widget(Paragraph::new(lines), value_area);
         }
         ValueSize::Compact => {
-            let value_line = vec![
+            let room = inner
+                .width
+                .saturating_sub(text_width(&value_text) as u16 + 4);
+            let mut value_line = vec![
                 Span::raw("  "),
                 Span::styled(
-                    format_metric(value, &card.unit, currency),
+                    value_text,
                     Style::new()
                         .fg(theme::bright())
                         .add_modifier(Modifier::BOLD),
                 ),
             ];
+            if let Some(spans) = trend_spans(card, card.trend, currency, room) {
+                value_line.push(Span::raw("  "));
+                value_line.extend(spans);
+            }
             frame.render_widget(
                 Paragraph::new(vec![
                     Line::default(),
@@ -2224,20 +2810,42 @@ fn draw_card(
         }
     }
 
-    let values = card.series.sample(now);
+    let (values, ghost) = chart_window(card, &card.series.sample(now));
     let chart = Rect {
         x: chart_area.x.saturating_add(2),
         y: chart_area.y.saturating_add(1),
         width: chart_area.width.saturating_sub(4),
         height: chart_area.height.saturating_sub(1),
     };
+    let ghost = ghost.filter(|_| hero || chart.height >= 10);
     if values.len() >= 2 && chart.height >= 1 {
         let style = if matches!(card.id.as_str(), "mrr" | "active_subscriptions") {
             ChartStyle::Band
         } else {
             ChartStyle::Area
         };
-        draw_chart(frame, chart, &values, accent, style, false);
+        draw_chart(
+            frame,
+            chart,
+            &values,
+            ghost.as_deref(),
+            accent,
+            style,
+            false,
+        );
+        if ghost.is_some() && chart.width >= 36 && chart.height >= 6 {
+            let legend = format!("▀▀ the {} days before", crate::api::COMPARE_DAYS);
+            let width = text_width(&legend) as u16;
+            frame.render_widget(
+                Paragraph::new(Span::styled(legend, Style::new().fg(ghost_ink()))),
+                Rect {
+                    x: chart.right().saturating_sub(width),
+                    y: chart_area.y,
+                    width,
+                    height: 1,
+                },
+            );
+        }
     } else if chart.height >= 1 {
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
@@ -2249,23 +2857,30 @@ fn draw_card(
     }
 }
 
-fn money_symbol(card: &Card, currency: &str) -> Option<String> {
-    if card.unit == "$" || card.unit.eq_ignore_ascii_case(currency) {
-        Some(currency_symbol(currency).trim().to_string())
-    } else {
-        None
-    }
+fn money(card: &Card, currency: &str) -> bool {
+    card.unit == "$" || card.unit.eq_ignore_ascii_case(currency)
 }
 
-fn card_period(card: &Card) -> String {
+fn card_period(card: &Card, currency: &str, scoped: bool) -> String {
+    let symbol = currency_symbol(currency).trim().to_string();
     match card.id.as_str() {
-        "active_trials" | "active_subscriptions" => "Right now".to_string(),
-        "mrr" => "Monthly recurring".to_string(),
-        "active_users" => "Active in 28 days".to_string(),
+        "active_users" | "active_customers" => if scoped {
+            "used it · 28 days"
+        } else {
+            "used your apps · 28 days"
+        }
+        .to_string(),
+        "revenue" => format!("{symbol} paid · 28 days"),
+        "new_customers" => "new · 28 days".to_string(),
+        crate::api::PURCHASES => "28 days".to_string(),
+        "active_subscriptions" | "active_trials" => "right now".to_string(),
+        "mrr" => format!("{symbol} a month"),
+        _ if money(card, currency) => format!("{symbol} {}", period_label(&card.period)),
         _ => period_label(&card.period),
     }
 }
 
+/// Change against the stretch before, calm by design: growth is lit, steady and dips stay quiet, nothing is red.
 fn trend_spans(
     card: &Card,
     trend: Option<Trend>,
@@ -2273,65 +2888,41 @@ fn trend_spans(
     width: u16,
 ) -> Option<Vec<Span<'static>>> {
     let trend = trend?;
-    let short = width < 58;
-    let tiny = width < 42;
-    if trend.ratio.is_finite() && trend.ratio.abs() < 0.02 && trend.change.abs() < 0.5 {
-        return Some(vec![Span::styled(
-            if short { "steady" } else { "steady this week" },
-            Style::new().fg(theme::dim()),
-        )]);
-    }
-    let up = trend.change >= 0.0;
-    let month_up = trend.long_ratio.is_some_and(|ratio| ratio > 0.0);
-    let color = if up {
-        theme::good()
-    } else if month_up {
-        theme::dim()
+    let quiet = Style::new().fg(theme::dim());
+    let suffix = if width >= 58 {
+        format!(" vs {} days before", trend.days)
     } else {
-        theme::bad()
+        String::new()
     };
-    let arrow = if up { "▲" } else { "▼" };
-    let percent = trend.ratio.is_finite();
-    let value = if !percent {
-        match card.id.as_str() {
-            "revenue" | "mrr" => format_metric(trend.change.abs().round(), "$", currency),
-            _ => format!("{}", trend.change.abs().round() as i64),
-        }
+    if !trend.ratio.is_finite() {
+        return Some(vec![
+            Span::styled("▲ new", Style::new().fg(theme::good())),
+            Span::styled(suffix, quiet),
+        ]);
+    }
+    if trend.ratio.abs() < STEADY {
+        return Some(vec![Span::styled(format!("steady{suffix}"), quiet)]);
+    }
+    let up = trend.change > 0.0;
+    let small_base = trend.previous.abs() < 10.0 && !PEOPLE.contains(&card.id.as_str());
+    let value = if small_base && money(card, currency) {
+        grouped_money(trend.change.abs(), currency)
+    } else if small_base {
+        grouped(trend.change.abs())
     } else {
-        match card.id.as_str() {
-            "revenue" => format_metric(trend.change.abs().round(), "$", currency),
-            "new_customers" => format!("{}", trend.change.abs().round() as i64),
-            _ => format!("{:.0}%", trend.ratio.abs() * 100.0),
-        }
+        change_label(trend)
     };
-    let mut spans = vec![Span::styled(
-        format!("{arrow} {value}"),
-        Style::new().fg(color),
-    )];
-    if !short {
-        spans.push(Span::styled(" this week", Style::new().fg(theme::dim())));
-    } else if percent && !matches!(card.id.as_str(), "revenue" | "new_customers") {
-        spans.push(Span::styled(" 7d", Style::new().fg(theme::dim())));
-    }
-    if !tiny
-        && let Some(month) = trend.long_ratio
-        && month.is_finite()
-        && month.abs() >= 0.02
-    {
-        spans.push(Span::styled(
-            if short { " · " } else { "   ·   " },
-            Style::new().fg(theme::border()),
-        ));
-        spans.push(Span::styled(
-            format!(
-                "{} {:.0}% 28d",
-                if month >= 0.0 { "▲" } else { "▼" },
-                month.abs() * 100.0
-            ),
-            Style::new().fg(theme::dim()),
-        ));
-    }
-    Some(spans)
+    Some(vec![
+        Span::styled(
+            format!("{} {value}", if up { "▲" } else { "▼" }),
+            if up {
+                Style::new().fg(theme::good())
+            } else {
+                quiet
+            },
+        ),
+        Span::styled(suffix, quiet),
+    ])
 }
 
 fn number_text(value: f64) -> String {
@@ -2506,10 +3097,16 @@ enum ChartStyle {
     Band,
 }
 
+/// The previous period's line where no fill covers it.
+fn ghost_ink() -> Color {
+    shade(theme::dim(), 0.72)
+}
+
 fn draw_chart(
     frame: &mut Frame,
     area: Rect,
     values: &[f64],
+    ghost: Option<&[f64]>,
     accent: Color,
     style: ChartStyle,
     guides: bool,
@@ -2518,18 +3115,24 @@ fn draw_chart(
     if area.width == 0 || rows == 0 || values.len() < 2 {
         return;
     }
+    let ghost = ghost.filter(|ghost| ghost.len() >= 2);
+    let scale: Vec<f64> = values
+        .iter()
+        .chain(ghost.into_iter().flatten())
+        .copied()
+        .collect();
     let sub_rows = rows * 2;
     let fill = shade(accent, if style == ChartStyle::Band { 0.22 } else { 0.4 });
     let (low, high) = match style {
         ChartStyle::Band => {
-            let min = values.iter().copied().fold(f64::INFINITY, f64::min);
-            let max = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+            let min = scale.iter().copied().fold(f64::INFINITY, f64::min);
+            let max = scale.iter().copied().fold(f64::NEG_INFINITY, f64::max);
             let pad = ((max - min) * 0.5).max(max.abs() * 0.10).max(0.5);
             (min - pad, max + pad)
         }
         ChartStyle::Area => {
-            let min = values.iter().copied().fold(0.0_f64, f64::min);
-            let max = values.iter().copied().fold(0.0_f64, f64::max);
+            let min = scale.iter().copied().fold(0.0_f64, f64::min);
+            let max = scale.iter().copied().fold(0.0_f64, f64::max);
             if (max - min).abs() < f64::EPSILON {
                 (min - 1.0, min + 1.0)
             } else {
@@ -2569,6 +3172,17 @@ fn draw_chart(
         };
         paint_column(frame.buffer_mut(), area, column, from, to, fill);
         paint_edge(frame.buffer_mut(), area, column, sub, accent);
+    }
+
+    if let Some(ghost) = ghost {
+        for column in 0..area.width {
+            let position = column as f64 / width * (ghost.len() - 1) as f64;
+            let value = sample(ghost, position);
+            let sub = (((value - low) / span) * (sub_rows.saturating_sub(1)) as f64)
+                .round()
+                .clamp(0.0, sub_rows as f64 - 1.0) as usize;
+            paint_ghost(frame.buffer_mut(), area, column, sub, fill);
+        }
     }
 
     if guides && style == ChartStyle::Area && low < 0.0 && high > 0.0 {
@@ -2628,6 +3242,34 @@ fn paint_edge(
     cell.set_fg(accent);
 }
 
+/// Draws the previous period as a thin line: grey over empty cells, cut into the fill where you have grown past it.
+fn paint_ghost(
+    buffer: &mut ratatui::buffer::Buffer,
+    area: Rect,
+    column: u16,
+    sub: usize,
+    fill: Color,
+) {
+    let row = sub / 2;
+    if row >= area.height as usize {
+        return;
+    }
+    let y = area.bottom() - 1 - row as u16;
+    let cell = &mut buffer[(area.x + column, y)];
+    let symbol = if sub.is_multiple_of(2) { "▄" } else { "▀" };
+    match cell.symbol() {
+        " " => {
+            cell.set_symbol(symbol).set_fg(ghost_ink());
+        }
+        "█" => {
+            cell.set_symbol(symbol)
+                .set_fg(blend_color(fill, theme::surface(), 0.6))
+                .set_bg(fill);
+        }
+        _ => {}
+    }
+}
+
 fn sample(values: &[f64], position: f64) -> f64 {
     let low = position.floor().max(0.0) as usize;
     let low = low.min(values.len() - 1);
@@ -2670,10 +3312,13 @@ fn draw_footer(app: &App, frame: &mut Frame, area: Rect, now: Instant) {
             Style::new().fg(theme::warn()),
         ))
     } else if hints {
-        let keys = if app.demo {
-            " q quit   r refresh   p projects   f activity   ? help"
-        } else {
-            " q quit   r refresh   p projects   f activity   Enter detail   ? help"
+        let keys = match (app.demo, left.width) {
+            (true, 56..) => " q quit   r refresh   p projects   f activity   ? help",
+            (false, 70..) => {
+                " q quit   r refresh   p projects   f activity   Enter detail   ? help"
+            }
+            (false, 63..) => " q quit  r refresh  p projects  f activity  Enter detail  ? help",
+            _ => " q quit  r refresh  p projects  f activity  ? help",
         };
         Line::from(Span::styled(keys, Style::new().fg(theme::dim())))
     } else if app.stale(now) {
@@ -3020,30 +3665,8 @@ fn draw_health(app: &App, frame: &mut Frame, area: Rect, now: Instant) {
 
 fn draw_help(frame: &mut Frame, area: Rect) {
     let width = area.width.saturating_sub(12).clamp(50, 100);
-    let height = 30.min(area.height.saturating_sub(4));
-    let rect = Rect {
-        x: area.x + (area.width.saturating_sub(width)) / 2,
-        y: area.y + (area.height.saturating_sub(height)) / 2,
-        width,
-        height,
-    };
-    frame.render_widget(Clear, rect);
-    let block = Block::bordered()
-        .border_style(Style::new().fg(theme::border_strong()))
-        .style(Style::new().bg(theme::surface()))
-        .title(Line::from(vec![
-            Span::styled(
-                " rc-tui ",
-                Style::new()
-                    .fg(theme::bright())
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled("keys and data", Style::new().fg(theme::dim())),
-        ]));
-    let inner = block.inner(rect);
-    frame.render_widget(block, rect);
     let lines = vec![
-        dim_line("  Dashboard"),
+        dim_line("  Home"),
         key_line("q / Esc", "quit"),
         key_line("r", "refresh now (forces charts)"),
         key_line("p", "project picker"),
@@ -3072,12 +3695,39 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         key_line("[ / ]", "24h / 7d / 28d / all"),
         key_line("g / G", "first / last"),
         Line::default(),
-        dim_line("  Cards: RevenueCat overview values. Sparklines: 28 daily points."),
-        dim_line("  Trends: the last 7 complete days vs the 7 before. * marks a partial total."),
+        dim_line("  People and revenue lead; subscriptions are one way to be paid, not the goal."),
+        dim_line("  Trends: the last 28 complete days vs the 28 before, within 5% is steady."),
+        dim_line(
+            "  The faint line in People and Revenue is the 28 days before. * marks a partial total.",
+        ),
+        dim_line("  Set enough = <amount> in config.toml to draw your enough line."),
         dim_line(
             "  UI scale, page, theme, wall, pins and the last project persist in config.toml.",
         ),
     ];
+    let height =
+        (wrapped_height(&lines, width.saturating_sub(2)) + 2).min(area.height.saturating_sub(2));
+    let rect = Rect {
+        x: area.x + (area.width.saturating_sub(width)) / 2,
+        y: area.y + (area.height.saturating_sub(height)) / 2,
+        width,
+        height,
+    };
+    frame.render_widget(Clear, rect);
+    let block = Block::bordered()
+        .border_style(Style::new().fg(theme::border_strong()))
+        .style(Style::new().bg(theme::surface()))
+        .title(Line::from(vec![
+            Span::styled(
+                " rc-tui ",
+                Style::new()
+                    .fg(theme::bright())
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("keys and data", Style::new().fg(theme::dim())),
+        ]));
+    let inner = block.inner(rect);
+    frame.render_widget(block, rect);
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
 }
 
@@ -3115,7 +3765,7 @@ fn draw_detail(app: &App, frame: &mut Frame, area: Rect, now: Instant) {
     let mut header_spans = vec![
         Span::styled("← ", Style::new().fg(theme::dim())),
         Span::styled(
-            card.name.to_uppercase(),
+            card_title(card),
             Style::new()
                 .fg(theme::bright())
                 .add_modifier(Modifier::BOLD),
@@ -3128,7 +3778,14 @@ fn draw_detail(app: &App, frame: &mut Frame, area: Rect, now: Instant) {
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
-            format!("   {}", card_period(card)),
+            format!(
+                "   {}",
+                card_period(
+                    card,
+                    &app.currency,
+                    app.scope > 0 || app.project_count() == 1
+                )
+            ),
             Style::new().fg(theme::dim()),
         ),
     ];
@@ -3222,7 +3879,7 @@ fn draw_detail(app: &App, frame: &mut Frame, area: Rect, now: Instant) {
         };
         let [plot, dates] =
             Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(chart_area);
-        draw_chart(frame, plot, &values, accent(&card.id), style, true);
+        draw_chart(frame, plot, &values, None, accent(&card.id), style, true);
         draw_dates(frame, dates, values.len());
     } else if chart_area.height > 1 {
         frame.render_widget(
@@ -3255,7 +3912,10 @@ fn draw_detail(app: &App, frame: &mut Frame, area: Rect, now: Instant) {
             ),
             Span::styled(format!("{:>16}", "VALUE"), Style::new().fg(theme::dim())),
             Span::styled(format!("{:>8}", "SHARE"), Style::new().fg(theme::dim())),
-            Span::styled(format!("{:>10}", "7D"), Style::new().fg(theme::dim())),
+            Span::styled(
+                format!("{:>10}", format!("{}D", crate::api::COMPARE_DAYS)),
+                Style::new().fg(theme::dim()),
+            ),
             Span::styled(format!("  {:<8}", "STATE"), Style::new().fg(theme::dim())),
         ]);
         frame.render_widget(Paragraph::new(header), table_area);
@@ -3328,20 +3988,13 @@ fn detail_trend(trend: Option<Trend>) -> (String, Color) {
     if !trend.ratio.is_finite() {
         return ("new".to_string(), theme::good());
     }
-    if trend.ratio.abs() < 0.02 {
+    if trend.ratio.abs() < STEADY {
         return ("steady".to_string(), theme::dim());
     }
-    let arrow = if trend.change >= 0.0 { "▲" } else { "▼" };
-    let month_up = trend.long_ratio.is_some_and(|ratio| ratio > 0.0);
+    let up = trend.change > 0.0;
     (
-        format!("{arrow} {:.0}%", trend.ratio.abs() * 100.0),
-        if trend.change >= 0.0 {
-            theme::good()
-        } else if month_up {
-            theme::dim()
-        } else {
-            theme::bad()
-        },
+        format!("{} {}", if up { "▲" } else { "▼" }, change_label(trend)),
+        if up { theme::good() } else { theme::dim() },
     )
 }
 
@@ -3372,13 +4025,15 @@ fn draw_dates(frame: &mut Frame, area: Rect, points: usize) {
 pub(crate) fn format_metric(value: f64, unit: &str, currency: &str) -> String {
     if unit == "$" || unit.eq_ignore_ascii_case(currency) {
         let symbol = currency_symbol(currency);
-        if value.fract().abs() < 0.005 {
-            format!("{symbol}{value:.0}")
+        let cents = (value.abs().fract() * 100.0).round() as i64;
+        if cents == 0 || cents == 100 {
+            format!("{symbol}{}", grouped(value))
         } else {
-            format!("{symbol}{value:.2}")
+            let sign = if value < 0.0 { "-" } else { "" };
+            format!("{sign}{symbol}{}.{cents:02}", grouped(value.abs().trunc()))
         }
     } else {
-        format!("{}", value.round() as i64)
+        grouped(value)
     }
 }
 
@@ -3913,6 +4568,7 @@ mod tests {
             ui_page: 0,
             feed_path: None,
             feed_seen_at: None,
+            enough: None,
         });
         let deadline = Instant::now() + Duration::from_secs(5);
         while app.cards.is_empty() && Instant::now() < deadline {
@@ -3998,6 +4654,7 @@ mod tests {
             ui_page: 0,
             feed_path: None,
             feed_seen_at: None,
+            enough: None,
         });
         let deadline = Instant::now() + Duration::from_secs(5);
         while app.cards.is_empty() && Instant::now() < deadline {
@@ -4041,13 +4698,14 @@ mod tests {
             ui_page: 0,
             feed_path: None,
             feed_seen_at: None,
+            enough: None,
         });
         let deadline = Instant::now() + Duration::from_secs(5);
         while app.cards.is_empty() && Instant::now() < deadline {
             app.tick();
             std::thread::sleep(Duration::from_millis(10));
         }
-        assert_eq!(app.cards.len(), 6);
+        assert_eq!(app.cards.len(), 7);
         assert!(matches!(app.status, Status::Idle));
 
         let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
@@ -4055,19 +4713,197 @@ mod tests {
         let buffer = terminal.backend().buffer();
         let text: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
 
-        assert!(text.contains("ACTIVE TRIALS"));
-        assert!(text.contains("ACTIVE SUBSCRIPTIONS"));
-        assert!(text.contains("MRR"));
-        assert!(text.contains("REVENUE"));
-        assert!(text.contains("NEW CUSTOMERS"));
-        assert!(text.contains("ACTIVE CUSTOMERS"));
-        assert!(text.contains("Last 28 days"));
+        for title in [
+            "PEOPLE",
+            "REVENUE",
+            "FOUND YOU",
+            "PURCHASES",
+            "SUBSCRIBERS",
+            "RECURRING",
+            "IN TRIAL",
+        ] {
+            assert!(text.contains(title), "missing {title}");
+        }
+        assert!(text.contains("people used One in the last 28 days and paid"));
+        assert!(text.contains("Against the 28 days before:"));
+        assert!(text.contains("€ paid · 28 days"));
         assert!(text.contains("● live"));
         assert!(text.contains("next in"));
         assert!(
             text.chars().any(|c| matches!(c, '▄' | '▀' | '█')),
             "no block chart cells rendered"
         );
+    }
+
+    fn home_app(sources: Vec<crate::app::Source>, enough: Option<f64>) -> App {
+        let mut app = App::new(crate::app::AppOptions {
+            sources,
+            currency: "EUR".to_string(),
+            interval: Duration::from_secs(300),
+            chart_ttl: Duration::from_secs(900),
+            motion: crate::app::Motion::Off,
+            wall: false,
+            pins: Vec::new(),
+            ui_scale: 0,
+            ui_page: 0,
+            feed_path: None,
+            feed_seen_at: None,
+            enough,
+        });
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while (app.cards.is_empty() || app.live_count() < app.project_count())
+            && Instant::now() < deadline
+        {
+            app.tick();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        app
+    }
+
+    fn screen(app: &mut App, width: u16, height: u16) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal.draw(|frame| draw(app, frame)).unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect()
+    }
+
+    #[test]
+    fn home_leads_with_people_and_revenue_and_shows_every_app() {
+        let sources = ["Notes", "Habits", "Focus"]
+            .iter()
+            .enumerate()
+            .map(|(index, name)| crate::app::Source::demo(*name, format!("proj{index}")))
+            .collect();
+        let mut app = home_app(sources, Some(1_000_000.0));
+        let text = screen(&mut app, 200, 54);
+        assert!(text.contains("people used your apps in the last 28 days and paid €"));
+        assert!(text.contains("ENOUGH"));
+        assert!(text.contains("of €1,000,000"));
+        assert!(text.contains("YOUR APPS"));
+        for name in ["Notes", "Habits", "Focus"] {
+            assert!(text.contains(name), "garden is missing {name}");
+        }
+        assert!(text.contains("the 28 days before"));
+
+        app.enough = Some(1.0);
+        let text = screen(&mut app, 200, 54);
+        assert!(text.contains("ENOUGH ✓"));
+        assert!(text.contains("beyond enough"));
+
+        app.select_scope(1);
+        let text = screen(&mut app, 200, 54);
+        assert!(
+            !text.contains("ENOUGH"),
+            "enough is a whole-life line, not per app"
+        );
+        assert!(!text.contains("YOUR APPS"));
+    }
+
+    #[test]
+    fn home_fits_every_terminal_size_without_dropping_cards() {
+        let mut app = home_app(vec![crate::app::Source::demo("One", "proj1")], Some(500.0));
+        for (width, height) in [
+            (200, 54),
+            (140, 44),
+            (110, 34),
+            (90, 28),
+            (80, 24),
+            (60, 20),
+        ] {
+            let text = screen(&mut app, width, height);
+            for title in ["PEOPLE", "REVENUE", "IN TRIAL"] {
+                assert!(text.contains(title), "{width}x{height} is missing {title}");
+            }
+        }
+    }
+
+    #[test]
+    fn trends_stay_calm_when_numbers_fall() {
+        let mut app = home_app(vec![crate::app::Source::demo("One", "proj1")], None);
+        for card in &mut app.cards {
+            card.trend = Some(Trend {
+                ratio: -0.4,
+                change: -40.0,
+                previous: 100.0,
+                days: 28,
+            });
+        }
+        let line = comparison_line(&app).expect("comparison");
+        let words: String = line
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert_eq!(
+            words,
+            "Against the 28 days before: 40% less revenue, 40% fewer people."
+        );
+        assert!(
+            line.spans
+                .iter()
+                .all(|span| span.style.fg != Some(theme::bad()))
+        );
+        for card in &app.cards {
+            let spans = trend_spans(card, card.trend, "EUR", 80).expect("trend");
+            assert!(spans.iter().all(|span| span.style.fg != Some(theme::bad())));
+        }
+        let (label, color) = detail_trend(app.cards[0].trend);
+        assert_eq!(label, "▼ 40%");
+        assert_eq!(color, theme::dim());
+
+        app.cards[0].trend = Some(Trend {
+            ratio: 0.03,
+            change: 3.0,
+            previous: 100.0,
+            days: 28,
+        });
+        assert_eq!(detail_trend(app.cards[0].trend).0, "steady");
+
+        let growth = |ratio: f64| Trend {
+            ratio,
+            change: ratio * 50.0,
+            previous: 50.0,
+            days: 28,
+        };
+        assert_eq!(change_label(growth(0.4)), "40%");
+        assert_eq!(change_label(growth(2.77)), "3.8×");
+        assert_eq!(change_label(growth(14.0)), "15×");
+        app.cards[0].trend = Some(growth(8.5));
+        app.cards[1].trend = Some(growth(2.77));
+        let words: String = comparison_line(&app)
+            .expect("comparison")
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert_eq!(
+            words,
+            "Against the 28 days before: 3.8× the revenue, 9.5× the people."
+        );
+        let small_people = Trend {
+            previous: 5.0,
+            ..growth(8.5)
+        };
+        let people = trend_spans(&app.cards[0], Some(small_people), "EUR", 80).expect("trend");
+        assert!(people[0].content.contains("9.5×"), "{people:?}");
+    }
+
+    #[test]
+    fn numbers_in_prose_are_grouped() {
+        assert_eq!(grouped(14722.4), "14,722");
+        assert_eq!(grouped(999.0), "999");
+        assert_eq!(grouped(1_000_000.0), "1,000,000");
+        assert_eq!(grouped_money(2314.0, "EUR"), "€2,314");
+        assert_eq!(format_metric(2314.5, "$", "EUR"), "€2,314.50");
+        assert_eq!(format_metric(14.99, "$", "USD"), "$14.99");
+        assert_eq!(format_metric(-3.2, "$", "USD"), "-$3.20");
+        assert_eq!(format_metric(19.999, "$", "USD"), "$20");
+        assert_eq!(format_metric(14722.0, "#", "EUR"), "14,722");
     }
 
     #[test]

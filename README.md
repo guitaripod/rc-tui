@@ -1,14 +1,33 @@
 # rc-tui
 
-RevenueCat's Overview in a terminal: six animated metric cards for one project or
-all of them, with sparklines, a live purchase/review feed, a project picker,
-7/28/90-day metric detail, and per-project health.
+RevenueCat in a terminal, built around the people your apps reach and the money
+that actually arrived: how many people used your apps in the last 28 days, what
+they paid across every kind of purchase, how that compares with the 28 days
+before, your enough line, and every app at a glance. A live purchase and review
+feed, a project picker, 7/28/90-day detail and per-project health sit around it.
 
 [![rc-tui demo](docs/rc-tui-demo.png)](docs/rc-tui-demo.png)
 
 *`rc-tui --demo` — 17 mocked projects, no credentials. Click for full size.*
 
-[Five-state showcase](docs/showcase.png) — dashboard, full feed, celebration, shelf and ticker, at 3920×16010.
+[Showcase](docs/showcase.png): home, one app, light theme, wall, metric detail, a smaller terminal and the full feed.
+
+## Philosophy
+
+- **People first.** The first number is the people who used your apps; revenue
+  sits beside it, and the headline says both in one sentence.
+- **Money that arrived.** Revenue over the last 28 days counts every purchase:
+  one-time, lifetime and subscriptions. MRR is one small card, not the goal, so
+  nothing nudges a product toward a subscription it does not need.
+- **Four weeks, not one.** Every trend compares the last 28 complete days with
+  the 28 before. Four whole weeks cancel out weekday swings, and the faint line
+  in People and Revenue is the 28 days before.
+- **Calm by default.** Growth is lit, a change within 5% is steady, and a dip is
+  said plainly in grey, never red. A doubling or more reads as a multiple.
+- **Enough.** Set `enough` to the 28-day revenue that covers your life; the line
+  fills toward it, then shows what is beyond it.
+- **Every app counts.** Your apps are listed by the people they reached, so the
+  quiet ones stay in view.
 
 ## Install
 
@@ -40,7 +59,7 @@ rc-tui --check    # validate every saved project: metrics and charts
 ## Keys
 
 ```text
-dashboard   q quit · r refresh · p projects · f activity · Enter detail · ? help
+home        q quit · r refresh · p projects · f activity · Enter detail · ? help
             ! health · w wall · T light/dark · x export CSV · a add · i import · s setup
             ←→↑↓/Tab focus · + - UI scale · [ ] page
 picker      type to filter · ↑↓ · Enter open · Esc close
@@ -49,8 +68,8 @@ detail      Esc back · ↑↓ metric · t 7/28/90 days · j/k project · Enter 
 activity    f/Esc/q close · j/k move · Tab filter · [ ] 24h/7d/28d/all · g/G ends
 ```
 
-`+`/`-` cycles the UI scale (auto, 3, 2 or 1 cards per page); `[`/`]` changes
-page. Scale, page, wall, pins and the last project persist in the config. `x`
+`+`/`-` cycles the UI scale: auto is the home layout, then 3, 2 or 1 cards per
+page; `[`/`]` changes page. Scale, page, wall, pins and the last project persist in the config. `x`
 writes a CSV to `~/.local/share/rc-tui/exports/`.
 
 ## Activity
@@ -78,6 +97,7 @@ dashboard is unaffected.
 ```toml
 currency = "EUR"
 chart_minutes = 15      # chart cache; the overview still refreshes every 5 min
+enough = 3000           # optional: the 28-day revenue that is enough for you
 
 [[projects]]
 id = "proj1a2b3c4d"
@@ -95,7 +115,10 @@ reads the terminal background and falls back to dark), `wall = true`,
 ## Data
 
 - Cards: `GET /v2/projects/{id}/metrics/overview`; sparklines:
-  `GET /v2/projects/{id}/charts/{name}` (28 days).
+  `GET /v2/projects/{id}/charts/{name}` (57 days: the 28 shown, the 28 they are
+  compared with, and today). Purchases are the revenue chart's daily
+  transactions, so they cost no extra request; they include renewals and are
+  not refunded away.
 - "All projects" sums projects locally. A failed project keeps its last known
   values; totals are marked `*`, the header shows `n/17 live`, and `!` names the
   failure.

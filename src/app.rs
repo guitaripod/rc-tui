@@ -22,6 +22,8 @@ const FLASH_MS: u32 = 500;
 const FOCUS_VISIBLE: Duration = Duration::from_secs(5);
 const NOTICE_TTL: Duration = Duration::from_secs(10);
 
+pub const PEOPLE: [&str; 2] = ["active_users", "active_customers"];
+
 #[derive(Clone)]
 pub struct Source {
     pub label: String,
@@ -154,6 +156,14 @@ pub struct DetailRow {
 }
 
 #[derive(Debug, Clone)]
+pub struct GardenRow {
+    pub label: String,
+    pub people: Option<f64>,
+    pub revenue: Option<f64>,
+    pub state: RowState,
+}
+
+#[derive(Debug, Clone)]
 pub struct ProjectView {
     pub label: String,
     pub id: String,
@@ -187,7 +197,8 @@ impl ProjectView {
 pub struct Trend {
     pub ratio: f64,
     pub change: f64,
-    pub long_ratio: Option<f64>,
+    pub previous: f64,
+    pub days: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -325,6 +336,7 @@ enum Command {
         metric_id: String,
         days: u64,
         monetary: bool,
+        measure: u64,
     },
 }
 
@@ -434,6 +446,7 @@ impl Worker {
                             metric_id,
                             days,
                             monetary,
+                            measure,
                         } => {
                             let indices: Vec<usize> = match only {
                                 Some(index) if index < runtimes.len() => vec![index],
@@ -449,7 +462,9 @@ impl Worker {
                                 set.spawn(async move {
                                     match &source.client {
                                         Some(client) => {
-                                            client.fetch_range(&chart, days, monetary).await
+                                            client
+                                                .fetch_range(&chart, days, monetary, measure)
+                                                .await
                                         }
                                         None => {
                                             let snapshot =
@@ -542,7 +557,9 @@ async fn fetch_source(
         Ok(overview) => overview,
         Err(failure) => return (Err(failure), cache, charts_at),
     };
-    cache.retain(|id, _| overview.metrics.iter().any(|metric| metric.id == *id));
+    cache.retain(|id, _| {
+        id == api::PURCHASES || overview.metrics.iter().any(|metric| metric.id == *id)
+    });
     let missing_chart = overview.metrics.iter().any(|metric| {
         api::chart_for_metric(&metric.id, &metric.name).is_some() && !cache.contains_key(&metric.id)
     });
@@ -562,8 +579,8 @@ async fn fetch_source(
             charts_at = Some(Instant::now());
         }
     }
-    let series = overview
-        .metrics
+    let mut metrics = overview.metrics;
+    let mut series: HashMap<String, Vec<f64>> = metrics
         .iter()
         .filter_map(|metric| {
             cache
@@ -572,9 +589,13 @@ async fn fetch_source(
                 .map(|values| (metric.id.clone(), values))
         })
         .collect();
+    if let Some(purchases) = cache.get(api::PURCHASES) {
+        metrics.push(api::purchases_metric(purchases));
+        series.insert(api::PURCHASES.to_string(), purchases.clone());
+    }
     (
         Ok(Snapshot {
-            metrics: overview.metrics,
+            metrics,
             series,
             currency: overview.currency,
         }),
@@ -586,24 +607,46 @@ async fn fetch_source(
 fn demo_salt(id: &str) -> u64 {
     id.bytes().fold(0u64, |hash, byte| {
         hash.wrapping_mul(1099511628211).wrapping_add(byte as u64)
-    }) | 1
+    })
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Measure {
+    Flow,
+    Daily,
+    Stock,
+}
+
+fn measure_of(id: &str) -> Measure {
+    match id {
+        "revenue" | "new_customers" | api::PURCHASES => Measure::Flow,
+        "active_users" | "active_customers" => Measure::Daily,
+        _ => Measure::Stock,
+    }
+}
+
+/// True for metrics whose daily points add up to the card value, so today's partial day is left off charts.
+pub fn is_flow(id: &str) -> bool {
+    measure_of(id) != Measure::Stock
+}
+
+/// Compares the last complete stretch of days with the same stretch before it, up to 28 against 28.
 fn trend_for(id: &str, series: &[f64]) -> Option<Trend> {
-    let complete = series.len().checked_sub(1)?;
-    if complete < 14 {
+    let complete = &series[..series.len().checked_sub(1)?];
+    let days = (complete.len() / 2).min(api::COMPARE_DAYS);
+    if days < 7 {
         return None;
     }
-    let series = &series[..complete];
-    let last = series.len() - 1;
-    let flow = matches!(id, "revenue" | "new_customers");
-    let recent = window_value(flow, &series[last - 6..=last]);
-    let previous = window_value(flow, &series[last - 13..=last - 7]);
-    let opening = window_value(flow, &series[..7]);
-    let long_ratio = if opening.abs() < 1e-9 {
-        None
-    } else {
-        Some((recent - opening) / opening.abs())
+    let split = complete.len() - days;
+    let recent_days = &complete[split..];
+    let previous_days = &complete[split - days..split];
+    let (recent, previous) = match measure_of(id) {
+        Measure::Flow => (recent_days.iter().sum(), previous_days.iter().sum()),
+        Measure::Daily => (
+            recent_days.iter().sum::<f64>() / days as f64,
+            previous_days.iter().sum::<f64>() / days as f64,
+        ),
+        Measure::Stock => (recent_days[days - 1], previous_days[days - 1]),
     };
     if recent.abs() < 1e-9 && previous.abs() < 1e-9 {
         return None;
@@ -616,15 +659,22 @@ fn trend_for(id: &str, series: &[f64]) -> Option<Trend> {
     Some(Trend {
         ratio,
         change: recent - previous,
-        long_ratio,
+        previous,
+        days,
     })
 }
 
-fn window_value(flow: bool, values: &[f64]) -> f64 {
-    if flow {
-        values.iter().sum()
-    } else {
-        values.iter().sum::<f64>() / values.len() as f64
+/// The home screen order: people first, then the money they paid, then the subscription details.
+pub fn card_rank(id: &str) -> usize {
+    match id {
+        "active_users" | "active_customers" => 0,
+        "revenue" => 1,
+        "new_customers" => 2,
+        api::PURCHASES => 3,
+        "active_subscriptions" => 4,
+        "mrr" => 5,
+        "active_trials" => 6,
+        _ => 7,
     }
 }
 
@@ -640,6 +690,7 @@ pub struct AppOptions {
     pub ui_page: usize,
     pub feed_path: Option<PathBuf>,
     pub feed_seen_at: Option<i64>,
+    pub enough: Option<f64>,
 }
 
 pub struct App {
@@ -668,6 +719,7 @@ pub struct App {
     pub ui_scale: u8,
     pub page: usize,
     pub activity: Activity,
+    pub enough: Option<f64>,
     worker: Worker,
     last_frame: Instant,
     frame_delta: FxDuration,
@@ -730,6 +782,7 @@ impl App {
             ui_scale: options.ui_scale.min(3),
             page: options.ui_page,
             activity,
+            enough: options.enough.filter(|amount| *amount > 0.0),
             worker,
             last_frame: now,
             frame_delta: FxDuration::from_millis(16),
@@ -1235,6 +1288,52 @@ impl App {
         self.picker.as_ref().map_or(0, |picker| picker.selected)
     }
 
+    pub fn card(&self, ids: &[&str]) -> Option<&Card> {
+        self.cards
+            .iter()
+            .find(|card| ids.contains(&card.id.as_str()))
+    }
+
+    /// Every project with the people it served and the money it earned, most people first.
+    pub fn garden_rows(&self) -> Vec<GardenRow> {
+        let now = Instant::now();
+        let mut rows: Vec<GardenRow> = self
+            .views
+            .iter()
+            .filter_map(|view| {
+                let snapshot = view.snapshot.as_ref()?;
+                let value = |ids: &[&str]| {
+                    snapshot
+                        .metrics
+                        .iter()
+                        .find(|metric| ids.contains(&metric.id.as_str()))
+                        .map(|metric| metric.value)
+                };
+                Some(GardenRow {
+                    label: view.label.clone(),
+                    people: value(&PEOPLE),
+                    revenue: value(&["revenue"]),
+                    state: view.state(now, self.stale_after()),
+                })
+            })
+            .collect();
+        rows.sort_by(|left, right| {
+            let people = right
+                .people
+                .unwrap_or(0.0)
+                .total_cmp(&left.people.unwrap_or(0.0));
+            people
+                .then(
+                    right
+                        .revenue
+                        .unwrap_or(0.0)
+                        .total_cmp(&left.revenue.unwrap_or(0.0)),
+                )
+                .then_with(|| left.label.cmp(&right.label))
+        });
+        rows
+    }
+
     pub fn health_rows(&self) -> Vec<HealthRow> {
         let now = Instant::now();
         self.views
@@ -1514,6 +1613,7 @@ impl App {
         } else {
             (Duration::ZERO, Duration::ZERO)
         };
+        let focused = self.cards.get(self.focus).map(|card| card.id.clone());
         for metric in &snapshot.metrics {
             let series = snapshot.series.get(&metric.id).cloned().unwrap_or_default();
             let mut changed = false;
@@ -1532,7 +1632,15 @@ impl App {
                     }
                     card.updated = Some(now);
                 }
-                None => self.cards.push(Card::new(metric, series, now)),
+                None => {
+                    let rank = card_rank(&metric.id);
+                    let at = self
+                        .cards
+                        .iter()
+                        .position(|card| card_rank(&card.id) > rank)
+                        .unwrap_or(self.cards.len());
+                    self.cards.insert(at, Card::new(metric, series, now));
+                }
             }
 
             if animate
@@ -1549,6 +1657,10 @@ impl App {
                 self.fx.add_unique_effect(metric.id.clone(), flash);
             }
         }
+
+        self.focus = focused
+            .and_then(|id| self.cards.iter().position(|card| card.id == id))
+            .unwrap_or(0);
 
         if !self.intro_done {
             self.intro_done = true;
@@ -1925,6 +2037,7 @@ impl App {
             metric_id: card.id.clone(),
             days: detail.window.days(),
             monetary,
+            measure: api::measure_for_metric(&card.id),
         });
         if let Some(detail) = self.detail.as_mut() {
             detail.loading = true;
@@ -2016,6 +2129,7 @@ mod tests {
             ui_page: 0,
             feed_path: None,
             feed_seen_at: None,
+            enough: None,
         }
     }
 
@@ -2092,10 +2206,24 @@ mod tests {
         let mut app = demo_app();
         wait_for_data(&mut app);
 
-        assert_eq!(app.cards.len(), 6);
+        assert_eq!(app.cards.len(), 7);
         assert_eq!(app.views.len(), 3);
         assert_eq!(app.scope_label(), "All projects");
         assert!(matches!(app.status, Status::Idle));
+        let order: Vec<&str> = app.cards.iter().map(|card| card.id.as_str()).collect();
+        assert_eq!(
+            order,
+            [
+                "active_users",
+                "revenue",
+                "new_customers",
+                "purchases",
+                "active_subscriptions",
+                "mrr",
+                "active_trials"
+            ]
+        );
+        assert_eq!(app.focus, 0);
 
         let aggregate_mrr = app
             .cards
@@ -2119,7 +2247,7 @@ mod tests {
 
         app.select_scope(1);
         assert_eq!(app.scope_label(), "One");
-        assert_eq!(app.cards.len(), 6);
+        assert_eq!(app.cards.len(), 7);
         let scoped_mrr = app
             .cards
             .iter()
@@ -2212,7 +2340,7 @@ mod tests {
 
         app.set_ui_scale(1);
         assert_eq!(app.per_page(), 3);
-        assert_eq!(app.page_count(), 2);
+        assert_eq!(app.page_count(), 3);
         assert_eq!(app.visible_indices(), vec![0, 1, 2]);
         assert_eq!(app.focus, 0);
 
@@ -2223,13 +2351,13 @@ mod tests {
         assert_eq!(app.focus, 3);
 
         app.set_ui_scale(2);
-        assert_eq!(app.page_count(), 3);
+        assert_eq!(app.page_count(), 4);
         assert_eq!(app.visible_indices(), vec![0, 1]);
         app.set_ui_scale(3);
-        assert_eq!(app.page_count(), 6);
+        assert_eq!(app.page_count(), 7);
         assert_eq!(app.visible_indices(), vec![0]);
         app.set_ui_scale(0);
-        assert_eq!(app.visible_indices().len(), 6);
+        assert_eq!(app.visible_indices().len(), 7);
     }
 
     #[test]
@@ -2299,8 +2427,9 @@ mod tests {
         let mut app = demo_app();
         wait_for_data(&mut app);
         let body = app.csv_body();
-        assert_eq!(body.lines().count(), 1 + 6 * 28);
+        assert_eq!(body.lines().count(), 1 + 7 * 57);
         assert!(body.contains("\"All projects\",\"mrr\",\"MRR\""));
+        assert!(body.contains("\"All projects\",\"purchases\",\"Purchases\""));
         assert!(body.starts_with("scope,metric,metric_name,date,value,unit,period\n"));
     }
 
@@ -2318,12 +2447,32 @@ mod tests {
     }
 
     #[test]
-    fn trend_leaves_out_the_partial_current_day() {
-        let mut series = vec![50.0; 27];
-        for value in &mut series[13..20] {
-            *value = 100.0;
-        }
+    fn trend_compares_28_complete_days_with_the_28_before() {
+        let mut series = vec![10.0; 28];
+        series.extend([20.0; 28]);
         series.push(1.0);
+
+        let revenue = trend_for("revenue", &series).expect("trend");
+        assert_eq!(revenue.days, 28);
+        assert!((revenue.ratio - 1.0).abs() < 1e-9, "{revenue:?}");
+        assert!((revenue.change - 280.0).abs() < 1e-9, "{revenue:?}");
+        assert!((revenue.previous - 280.0).abs() < 1e-9, "{revenue:?}");
+
+        let people = trend_for("active_users", &series).expect("trend");
+        assert!((people.ratio - 1.0).abs() < 1e-9, "{people:?}");
+        assert!((people.change - 10.0).abs() < 1e-9, "{people:?}");
+
+        let mut stock: Vec<f64> = (0..56).map(f64::from).collect();
+        stock.push(0.0);
+        let mrr = trend_for("mrr", &stock).expect("trend");
+        assert!((mrr.change - 28.0).abs() < 1e-9, "{mrr:?}");
+    }
+
+    #[test]
+    fn trend_leaves_out_the_partial_current_day() {
+        let mut series = vec![50.0; 28];
+        series.extend([25.0; 28]);
+        series.push(10_000.0);
 
         let trend = trend_for("active_users", &series).expect("trend");
         assert!(
@@ -2331,11 +2480,21 @@ mod tests {
             "ratio was {}",
             trend.ratio
         );
-        assert!(
-            (trend.change - -50.0).abs() < 1e-9,
-            "change was {}",
-            trend.change
-        );
+    }
+
+    #[test]
+    fn neighbouring_demo_projects_get_their_own_numbers() {
+        assert_ne!(demo_salt("proj_demo_6"), demo_salt("proj_demo_7"));
+        let first = api::demo_snapshot("EUR", demo_salt("proj_demo_6"));
+        let second = api::demo_snapshot("EUR", demo_salt("proj_demo_7"));
+        assert_ne!(first.series["revenue"], second.series["revenue"]);
+    }
+
+    #[test]
+    fn trend_shrinks_to_the_history_it_has() {
+        let trend = trend_for("revenue", &[5.0; 29]).expect("trend");
+        assert_eq!(trend.days, 14);
+        assert!(trend.ratio.abs() < 1e-9);
     }
 
     #[test]

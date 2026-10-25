@@ -5,8 +5,33 @@ use chrono::{Days, Utc};
 use serde::Deserialize;
 use tokio::task::JoinSet;
 
-const CHART_WINDOW_DAYS: u64 = 28;
+pub const COMPARE_DAYS: usize = 28;
+const CHART_WINDOW_DAYS: u64 = COMPARE_DAYS as u64 * 2 + 1;
 const CHART_TIMEOUT: Duration = Duration::from_secs(6);
+
+pub const PURCHASES: &str = "purchases";
+const REVENUE_CHART: &str = "revenue";
+const TRANSACTIONS_MEASURE: u64 = 1;
+
+pub const DEMO_PROJECTS: [&str; 17] = [
+    "MagicWeather",
+    "Notes",
+    "Habits",
+    "Focus",
+    "Budget",
+    "Recipes",
+    "Orbit",
+    "Ledger",
+    "Sketch",
+    "Pulse",
+    "Garden",
+    "Atlas",
+    "Ember",
+    "Compass",
+    "Vault",
+    "Lumen",
+    "Beacon",
+];
 
 pub const DOCS_API_KEYS: &str = "https://www.revenuecat.com/docs/projects/authentication";
 
@@ -280,25 +305,34 @@ impl Client {
             set.spawn(async move {
                 let result = match tokio::time::timeout(
                     CHART_TIMEOUT,
-                    client.chart(&chart, monetary, CHART_WINDOW_DAYS),
+                    client.chart_json(&chart, monetary, CHART_WINDOW_DAYS),
                 )
                 .await
                 {
                     Ok(result) => result,
                     Err(_) => Err(Failure::local("chart request timed out")),
                 };
-                (metric_ids, result)
+                (chart, metric_ids, result)
             });
         }
 
         let mut series = HashMap::new();
         while let Some(joined) = set.join_next().await {
-            if let Ok((metric_ids, Ok(values))) = joined
-                && !values.is_empty()
-            {
-                for metric_id in metric_ids {
-                    series.insert(metric_id, values.clone());
+            let Ok((chart, metric_ids, Ok(json))) = joined else {
+                continue;
+            };
+            let values = series_from_chart(&json, 0);
+            if values.is_empty() {
+                continue;
+            }
+            if chart == REVENUE_CHART {
+                let purchases = series_from_chart(&json, TRANSACTIONS_MEASURE);
+                if !purchases.is_empty() {
+                    series.insert(PURCHASES.to_string(), purchases);
                 }
+            }
+            for metric_id in metric_ids {
+                series.insert(metric_id, values.clone());
             }
         }
         series
@@ -309,14 +343,16 @@ impl Client {
         chart: &str,
         days: u64,
         monetary: bool,
+        measure: u64,
     ) -> Result<Vec<f64>, Failure> {
-        self.chart(chart, monetary, days).await
+        let json = self.chart_json(chart, monetary, days).await?;
+        Ok(series_from_chart(&json, measure))
     }
 
     pub async fn check_scopes(&self) -> ScopeReport {
         let overview = self.fetch_overview().await.map(|_| ());
         let charts = self
-            .chart("trials", false, 7)
+            .chart_json("trials", false, 7)
             .await
             .map(|_| ())
             .map_err(|failure| Failure {
@@ -350,7 +386,12 @@ impl Client {
             .collect())
     }
 
-    async fn chart(&self, name: &str, monetary: bool, days: u64) -> Result<Vec<f64>, Failure> {
+    async fn chart_json(
+        &self,
+        name: &str,
+        monetary: bool,
+        days: u64,
+    ) -> Result<serde_json::Value, Failure> {
         let end = Utc::now().date_naive();
         let start = end
             .checked_sub_days(Days::new(days.saturating_sub(1)))
@@ -371,15 +412,14 @@ impl Client {
             query.push(("currency", self.settings.currency.as_str()));
         }
         let body = self.get(&url, &query).await?;
-        let chart: serde_json::Value = serde_json::from_str(&body).map_err(|err| Failure {
+        serde_json::from_str(&body).map_err(|err| Failure {
             kind: FailureKind::Malformed,
             status: None,
             message: err.to_string(),
             doc_url: None,
             context: Some(format!("GET /charts/{name}")),
             retry_after: None,
-        })?;
-        Ok(series_from_chart(&chart))
+        })
     }
 
     async fn get(&self, url: &str, query: &[(&str, &str)]) -> Result<String, Failure> {
@@ -494,6 +534,7 @@ fn snippet(body: &str) -> String {
 
 pub fn chart_for_metric<'a>(id: &'a str, name: &str) -> Option<&'a str> {
     match id {
+        PURCHASES => Some(REVENUE_CHART),
         "active_trials" => Some("trials"),
         "active_subscriptions" => Some("actives"),
         "mrr" => Some("mrr"),
@@ -520,7 +561,32 @@ pub fn chart_for_metric<'a>(id: &'a str, name: &str) -> Option<&'a str> {
     }
 }
 
-fn series_from_chart(chart: &serde_json::Value) -> Vec<f64> {
+/// The chart measure that holds a metric: purchases are the revenue chart's transaction count.
+pub fn measure_for_metric(id: &str) -> u64 {
+    if id == PURCHASES {
+        TRANSACTIONS_MEASURE
+    } else {
+        0
+    }
+}
+
+/// Sums the newest `COMPARE_DAYS` points, the same rolling window as RevenueCat's overview.
+pub fn trailing_total(values: &[f64]) -> f64 {
+    values.iter().rev().take(COMPARE_DAYS).sum()
+}
+
+/// The overview has no purchase count, so it is derived from the revenue chart's daily transactions.
+pub fn purchases_metric(daily: &[f64]) -> OverviewMetric {
+    OverviewMetric {
+        id: PURCHASES.to_string(),
+        name: "Purchases".to_string(),
+        unit: "#".to_string(),
+        period: "P28D".to_string(),
+        value: trailing_total(daily),
+    }
+}
+
+fn series_from_chart(chart: &serde_json::Value, wanted: u64) -> Vec<f64> {
     let mut points: Vec<(i64, f64)> = Vec::new();
     let Some(values) = chart.get("values").and_then(|value| value.as_array()) else {
         return Vec::new();
@@ -532,7 +598,7 @@ fn series_from_chart(chart: &serde_json::Value) -> Vec<f64> {
                     .get("measure")
                     .and_then(|value| value.as_u64())
                     .unwrap_or(0);
-                if measure != 0 {
+                if measure != wanted {
                     continue;
                 }
                 let value = fields
@@ -545,7 +611,7 @@ fn series_from_chart(chart: &serde_json::Value) -> Vec<f64> {
                     .unwrap_or(index as i64);
                 points.push((cohort, value));
             }
-            serde_json::Value::Number(number) => {
+            serde_json::Value::Number(number) if wanted == 0 => {
                 points.push((index as i64, number.as_f64().unwrap_or(0.0)));
             }
             _ => {}
@@ -632,6 +698,14 @@ pub fn aggregate(snapshots: &[Snapshot]) -> Snapshot {
     }
 }
 
+/// Spreads neighbouring demo salts across the whole seed space so no two demo projects look alike.
+fn split_mix(value: u64) -> u64 {
+    let mut mixed = value.wrapping_add(0x9e37_79b9_7f4a_7c15);
+    mixed = (mixed ^ (mixed >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    mixed = (mixed ^ (mixed >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    mixed ^ (mixed >> 31)
+}
+
 pub fn demo_snapshot(currency: &str, salt: u64) -> Snapshot {
     const CARDS: [(&str, &str, &str, &str, f64); 6] = [
         ("active_trials", "Active Trials", "#", "P0D", 3.0),
@@ -642,25 +716,26 @@ pub fn demo_snapshot(currency: &str, salt: u64) -> Snapshot {
             "P0D",
             2.0,
         ),
-        ("mrr", "MRR", "$", "P0D", 6.0),
+        ("mrr", "MRR", "$", "P28D", 6.0),
         ("revenue", "Revenue", "$", "P28D", 132.0),
         ("new_customers", "New Customers", "#", "P28D", 695.0),
-        ("active_customers", "Active Customers", "#", "P28D", 882.0),
+        ("active_users", "Active Users", "#", "P28D", 882.0),
     ];
 
-    let mut seed = 0x9e37_79b9_7f4a_7c15u64 ^ salt.wrapping_mul(2_654_435_761).rotate_left(16) | 1;
+    let mut seed = split_mix(salt) | 1;
     let mut roll = move || {
         seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
         ((seed >> 40) as f64) / ((1u64 << 24) as f64)
     };
 
+    let length = CHART_WINDOW_DAYS as usize;
+    let reach = 0.15 + 2.2 * roll().powi(2);
     let mut metrics = Vec::new();
     let mut series = HashMap::new();
     for (id, name, unit, period, base) in CARDS {
-        let drift = 0.9 + 0.2 * roll();
-        let value = (base * drift).round().max(0.0);
+        let drift = (0.9 + 0.2 * roll()) * reach;
+        let mut value = (base * drift).round().max(0.0);
 
-        let length = CHART_WINDOW_DAYS as usize;
         let points: Vec<f64> = if matches!(id, "revenue" | "new_customers") {
             let mut raw: Vec<f64> = (0..length)
                 .map(|index| {
@@ -670,13 +745,13 @@ pub fn demo_snapshot(currency: &str, salt: u64) -> Snapshot {
                     } else {
                         1.0
                     };
-                    wave * spike * (0.7 + 0.6 * index as f64 / length as f64)
+                    wave * spike * (0.7 + 0.5 * index as f64 / length as f64)
                 })
                 .collect();
-            let sum: f64 = raw.iter().sum();
-            let scale = value / sum.max(1e-9);
+            let scale = value / trailing_total(&raw).max(1e-9);
             raw.iter_mut().for_each(|item| *item *= scale);
-            raw.iter()
+            let points: Vec<f64> = raw
+                .iter()
                 .map(|item| {
                     if unit == "$" {
                         (item * 100.0).round() / 100.0
@@ -684,18 +759,19 @@ pub fn demo_snapshot(currency: &str, salt: u64) -> Snapshot {
                         item.round()
                     }
                 })
-                .collect()
+                .collect();
+            value = trailing_total(&points).round();
+            points
         } else if id == "active_users" {
-            let target = value / 18.0;
-            let mut level = target * (0.7 + 0.6 * roll());
+            let mut level = value / 18.0 * (0.78 + 0.12 * roll());
             (0..length)
                 .map(|_| {
-                    level = (level * (0.9 + 0.2 * roll())).max(0.0);
+                    level = (level * (0.95 + 0.12 * roll())).clamp(0.0, value / 12.0);
                     level.round()
                 })
                 .collect()
         } else {
-            let start = value * (0.72 + 0.2 * roll());
+            let start = value * (0.62 + 0.2 * roll());
             let mut points: Vec<f64> = (0..length)
                 .map(|index| {
                     let progress = index as f64 / (length - 1) as f64;
@@ -714,8 +790,17 @@ pub fn demo_snapshot(currency: &str, salt: u64) -> Snapshot {
             points
         };
 
-        series.insert(id.to_string(), points);
+        if id == "revenue" {
+            let price = 4.5 + 3.0 * roll();
+            let purchases: Vec<f64> = points
+                .iter()
+                .map(|amount| (amount / price).round().max(0.0))
+                .collect();
+            metrics.push(purchases_metric(&purchases));
+            series.insert(PURCHASES.to_string(), purchases);
+        }
 
+        series.insert(id.to_string(), points);
         metrics.push(OverviewMetric {
             id: id.to_string(),
             name: name.to_string(),
@@ -841,6 +926,49 @@ mod tests {
         for (value, expected) in series.iter().zip(expected) {
             assert!((value - expected).abs() < 1e-9, "{series:?}");
         }
+    }
+
+    #[test]
+    fn reads_purchases_from_the_revenue_charts_transaction_measure() {
+        let chart = serde_json::json!({
+            "values": [
+                {"cohort": 2, "measure": 0, "value": 13.38},
+                {"cohort": 2, "measure": 1, "value": 1},
+                {"cohort": 2, "measure": 2, "value": 0},
+                {"cohort": 1, "measure": 0, "value": 32.15},
+                {"cohort": 1, "measure": 1, "value": 3},
+                {"cohort": 1, "measure": 2, "value": 0}
+            ]
+        });
+        assert_eq!(series_from_chart(&chart, 0), vec![32.15, 13.38]);
+        assert_eq!(
+            series_from_chart(&chart, TRANSACTIONS_MEASURE),
+            vec![3.0, 1.0]
+        );
+        assert_eq!(chart_for_metric(PURCHASES, "Purchases"), Some("revenue"));
+        assert_eq!(measure_for_metric(PURCHASES), TRANSACTIONS_MEASURE);
+        assert_eq!(measure_for_metric("revenue"), 0);
+
+        let purchases = purchases_metric(&[1.0; 40]);
+        assert!((purchases.value - COMPARE_DAYS as f64).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn demo_revenue_matches_its_last_28_days_of_purchases() {
+        let snapshot = demo_snapshot("EUR", 7);
+        let value = |id: &str| {
+            snapshot
+                .metrics
+                .iter()
+                .find(|metric| metric.id == id)
+                .map(|metric| metric.value)
+                .unwrap()
+        };
+        assert_eq!(snapshot.series["revenue"].len(), CHART_WINDOW_DAYS as usize);
+        assert!(
+            (value("revenue") - trailing_total(&snapshot.series["revenue"]).round()).abs() < 1e-9
+        );
+        assert!((value(PURCHASES) - trailing_total(&snapshot.series[PURCHASES])).abs() < 1e-9);
     }
 
     #[test]
