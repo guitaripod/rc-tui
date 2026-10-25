@@ -372,13 +372,7 @@ impl Delivery {
         actions: mpsc::UnboundedSender<Action>,
     ) -> Self {
         let cache = config::cache_dir().join("rc-tui");
-        let cards = card::available().then(|| {
-            settings
-                .cards
-                .as_deref()
-                .map(expand)
-                .unwrap_or_else(|| config::pictures_dir().join("rc-tui"))
-        });
+        let cards = card::available().then(|| moments::cards_dir(settings));
         let chime = settings
             .sound
             .unwrap_or(true)

@@ -357,7 +357,7 @@ fn run_command(command: &Command, args: &Args) -> color_eyre::Result<ExitCode> {
             let path = card::yearbook(
                 &moments::load(&moments::log_path()),
                 year,
-                &cards_dir(&saved),
+                &moments::cards_dir(&saved.moments),
             )?;
             println!("{}", path.display());
             Ok(ExitCode::SUCCESS)
@@ -372,7 +372,7 @@ fn run_command(command: &Command, args: &Args) -> color_eyre::Result<ExitCode> {
                 eprintln!("rc-tui: no moment with id {id}. `rc-tui moments` lists them.");
                 return Ok(ExitCode::FAILURE);
             };
-            let path = card::render(moment, &cards_dir(&saved))?;
+            let path = card::render(moment, &moments::cards_dir(&saved.moments))?;
             println!("{}", path.display());
             Ok(ExitCode::SUCCESS)
         }
@@ -380,16 +380,6 @@ fn run_command(command: &Command, args: &Args) -> color_eyre::Result<ExitCode> {
             print_moments();
             Ok(ExitCode::SUCCESS)
         }
-    }
-}
-
-fn cards_dir(config: &Config) -> std::path::PathBuf {
-    match config.moments.cards.as_deref() {
-        Some(dir) => match (dir.strip_prefix("~/"), std::env::var_os("HOME")) {
-            (Some(rest), Some(home)) => std::path::PathBuf::from(home).join(rest),
-            _ => std::path::PathBuf::from(dir),
-        },
-        None => config::pictures_dir().join("rc-tui"),
     }
 }
 

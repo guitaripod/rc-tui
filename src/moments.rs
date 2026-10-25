@@ -995,6 +995,27 @@ pub fn app_key(name: &str) -> String {
         .collect()
 }
 
+/// Where cards and yearbooks go: `[moments] cards` with `~` expanded, else the pictures folder.
+pub fn cards_dir(settings: &crate::config::MomentsConfig) -> PathBuf {
+    match settings.cards.as_deref() {
+        Some(dir) => match (dir.strip_prefix("~/"), std::env::var_os("HOME")) {
+            (Some(rest), Some(home)) => PathBuf::from(home).join(rest),
+            _ => PathBuf::from(dir),
+        },
+        None => crate::config::pictures_dir().join("rc-tui"),
+    }
+}
+
+/// A moment's card on this machine: its own path, or the same file name in the local cards folder when the log was synced from another machine.
+pub fn local_card(card: &str, cards: &Path) -> Option<PathBuf> {
+    let path = PathBuf::from(card);
+    if path.exists() {
+        return Some(path);
+    }
+    let mirrored = cards.join(path.file_name()?);
+    mirrored.exists().then_some(mirrored)
+}
+
 /// Text without flag emoji, for places that cannot draw them: terminals disagree on their width and librsvg paints them grey.
 pub fn plain(text: &str) -> String {
     text.chars()
@@ -1591,6 +1612,19 @@ mod tests {
         assert_eq!(moments.len(), 1);
         assert_eq!(moments[0].note.as_deref(), Some("Launched on Product Hunt"));
         assert_eq!(moments[0].series, moment.series);
+    }
+
+    #[test]
+    fn a_synced_card_is_found_by_name() {
+        let dir = std::env::temp_dir().join(format!("rc-tui-cards-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("2026-10-26-best-day.png"), b"png").unwrap();
+        assert_eq!(
+            local_card("/mnt/elsewhere/2026-10-26-best-day.png", &dir),
+            Some(dir.join("2026-10-26-best-day.png"))
+        );
+        assert_eq!(local_card("/mnt/elsewhere/missing.png", &dir), None);
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

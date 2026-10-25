@@ -1121,11 +1121,12 @@ impl App {
 
     /// Opens the selected moment's card in the default image viewer.
     fn open_card(&mut self) {
+        let cards = moments::cards_dir(&config::Config::load().moments);
         let card = self
             .moments
             .selected_moment()
-            .and_then(|moment| moment.card.clone())
-            .filter(|card| std::path::Path::new(card).exists());
+            .and_then(|moment| moment.card.as_deref())
+            .and_then(|card| moments::local_card(card, &cards));
         let Some(card) = card else {
             self.notice = Some(("this moment has no card".to_string(), Instant::now()));
             return;
@@ -1145,7 +1146,7 @@ impl App {
         let message = if opened {
             "card opened".to_string()
         } else {
-            format!("could not open {card}")
+            format!("could not open {}", card.display())
         };
         self.notice = Some((message, Instant::now()));
     }
