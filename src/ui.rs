@@ -2754,8 +2754,10 @@ fn draw_card(
     } else {
         grouped(value)
     };
+    let used: usize = meta.iter().map(Span::width).sum::<usize>() + 8;
+    let room = (inner.width as usize).saturating_sub(used) as u16;
     if size != ValueSize::Compact
-        && let Some(spans) = trend_spans(card, card.trend, currency, inner.width)
+        && let Some(spans) = trend_spans(card, card.trend, currency, room)
     {
         meta.push(Span::styled("   ·   ", Style::new().fg(theme::border())));
         meta.extend(spans);
@@ -2881,48 +2883,42 @@ fn card_period(card: &Card, currency: &str, scoped: bool) -> String {
 }
 
 /// Change against the stretch before, calm by design: growth is lit, steady and dips stay quiet, nothing is red.
+/// The "vs 28 days before" tail is added only when the whole phrase fits in `room` cells.
 fn trend_spans(
     card: &Card,
     trend: Option<Trend>,
     currency: &str,
-    width: u16,
+    room: u16,
 ) -> Option<Vec<Span<'static>>> {
     let trend = trend?;
     let quiet = Style::new().fg(theme::dim());
-    let suffix = if width >= 58 {
-        format!(" vs {} days before", trend.days)
+    let lit = Style::new().fg(theme::good());
+    let up = trend.change > 0.0;
+    let (head, style) = if !trend.ratio.is_finite() {
+        ("▲ new".to_string(), lit)
+    } else if trend.ratio.abs() < STEADY {
+        ("steady".to_string(), quiet)
+    } else {
+        let small_base = trend.previous.abs() < 10.0 && !PEOPLE.contains(&card.id.as_str());
+        let value = if small_base && money(card, currency) {
+            grouped_money(trend.change.abs(), currency)
+        } else if small_base {
+            grouped(trend.change.abs())
+        } else {
+            change_label(trend)
+        };
+        (
+            format!("{} {value}", if up { "▲" } else { "▼" }),
+            if up { lit } else { quiet },
+        )
+    };
+    let suffix = format!(" vs {} days before", trend.days);
+    let suffix = if text_width(&head) + text_width(&suffix) <= room as usize {
+        suffix
     } else {
         String::new()
     };
-    if !trend.ratio.is_finite() {
-        return Some(vec![
-            Span::styled("▲ new", Style::new().fg(theme::good())),
-            Span::styled(suffix, quiet),
-        ]);
-    }
-    if trend.ratio.abs() < STEADY {
-        return Some(vec![Span::styled(format!("steady{suffix}"), quiet)]);
-    }
-    let up = trend.change > 0.0;
-    let small_base = trend.previous.abs() < 10.0 && !PEOPLE.contains(&card.id.as_str());
-    let value = if small_base && money(card, currency) {
-        grouped_money(trend.change.abs(), currency)
-    } else if small_base {
-        grouped(trend.change.abs())
-    } else {
-        change_label(trend)
-    };
-    Some(vec![
-        Span::styled(
-            format!("{} {value}", if up { "▲" } else { "▼" }),
-            if up {
-                Style::new().fg(theme::good())
-            } else {
-                quiet
-            },
-        ),
-        Span::styled(suffix, quiet),
-    ])
+    Some(vec![Span::styled(head, style), Span::styled(suffix, quiet)])
 }
 
 fn number_text(value: f64) -> String {
