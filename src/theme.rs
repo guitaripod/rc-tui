@@ -83,6 +83,7 @@ const LIGHT: Palette = Palette {
 };
 
 static LIGHT_ACTIVE: AtomicBool = AtomicBool::new(false);
+static FOLLOW_SYSTEM: AtomicBool = AtomicBool::new(false);
 
 pub fn init(value: Option<&str>) {
     apply(Mode::parse(value));
@@ -94,7 +95,15 @@ pub fn apply(mode: Mode) {
         Mode::Light => true,
         Mode::Dark => false,
     };
+    FOLLOW_SYSTEM.store(mode == Mode::Auto, Ordering::Relaxed);
     LIGHT_ACTIVE.store(light, Ordering::Relaxed);
+}
+
+/// Moves the palette to the system's new scheme, unless the theme is pinned to light or dark.
+pub fn system_changed(light: bool) {
+    if FOLLOW_SYSTEM.load(Ordering::Relaxed) {
+        LIGHT_ACTIVE.store(light, Ordering::Relaxed);
+    }
 }
 
 pub fn toggle() -> Mode {

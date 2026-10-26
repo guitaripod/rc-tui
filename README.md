@@ -201,7 +201,8 @@ name = "MagicWeather"
 
 Optional keys: `ui_scale = 0..3` (0 auto, 1 = 3/page, 2 = 2/page, 3 = 1/page),
 `motion = "full" | "minimal" | "off"`, `theme = "auto" | "light" | "dark"` (auto
-reads the terminal background and falls back to dark), `wall = true`,
+reads the terminal background at start, falls back to dark, then follows the
+system light/dark setting while it runs), `wall = true`,
 `pins = ["proj..."]`,
 `feed_path = "/path/to/feed.json"` (defaults to the storebot state path).
 `feed_seen_at` is the read cursor and is maintained automatically.
