@@ -2366,7 +2366,7 @@ fn headline_lines(app: &App, now: Instant, compare: bool) -> Vec<Line<'static>> 
             if let Some(revenue) = revenue.filter(|card| card.value.target() > 0.0) {
                 sentence.push(Span::styled(" and paid ", words));
                 sentence.push(Span::styled(
-                    grouped_money(revenue.value.value(now), &app.currency),
+                    format_metric(revenue.value.value(now), &revenue.unit, &app.currency),
                     number("revenue"),
                 ));
                 if let Some(purchases) = purchases.filter(|count| *count >= 1.0) {
@@ -2391,7 +2391,7 @@ fn headline_lines(app: &App, now: Instant, compare: bool) -> Vec<Line<'static>> 
             ));
             sentence.push(Span::styled("earned ", words));
             sentence.push(Span::styled(
-                grouped_money(revenue.value.value(now), &app.currency),
+                format_metric(revenue.value.value(now), &revenue.unit, &app.currency),
                 number("revenue"),
             ));
             sentence.push(Span::styled(" in the last 28 days.", words));
@@ -2743,19 +2743,20 @@ fn draw_enough(app: &App, frame: &mut Frame, area: Rect, now: Instant) {
     } else {
         " ENOUGH   "
     };
+    let money = |value: f64| format_metric(value, "$", &app.currency);
     let detail = if reached {
         format!(
             "  {} of {} · {} beyond enough ",
-            grouped_money(earned, &app.currency),
-            grouped_money(enough, &app.currency),
-            grouped_money(earned - enough, &app.currency)
+            money(earned),
+            money(enough),
+            money(earned - enough)
         )
     } else {
         format!(
             "  {:.0}% · {} of {} ",
             (share * 100.0).floor(),
-            grouped_money(earned, &app.currency),
-            grouped_money(enough, &app.currency)
+            money(earned),
+            money(enough)
         )
     };
     let bar_width =
@@ -3035,7 +3036,7 @@ fn draw_card(
     }
 
     let value = card.value.value(now);
-    let text = number_text(value);
+    let text = number_text(value, money(card, currency));
     let big = big_digits(&text);
     let medium = medium_digits(&text);
     let fits = |rows: &Option<Vec<String>>| {
@@ -3078,7 +3079,7 @@ fn draw_card(
         meta.push(Span::styled(chip.0, Style::new().fg(chip.1)));
     }
     let value_text = if money(card, currency) {
-        grouped_money(value, currency)
+        format_metric(value, card.unit.as_str(), currency)
     } else {
         grouped(value)
     };
@@ -3249,12 +3250,15 @@ fn trend_spans(
     Some(vec![Span::styled(head, style), Span::styled(suffix, quiet)])
 }
 
-fn number_text(value: f64) -> String {
+fn number_text(value: f64, money: bool) -> String {
     let sign = if value < 0.0 { "-" } else { "" };
     let value = value.abs();
     let rounded = value.round();
+    let cents = (value * 100.0).round() / 100.0;
     if (value - rounded).abs() < 0.05 {
         format!("{sign}{}", rounded as i64)
+    } else if money && value < 1000.0 && (value - cents).abs() < 0.05 {
+        format!("{sign}{cents:.2}")
     } else if value < 100.0 {
         format!("{sign}{value:.1}")
     } else {
@@ -4865,6 +4869,17 @@ mod tests {
     use super::*;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
+
+    #[test]
+    fn money_keeps_its_cents_in_the_big_digits() {
+        assert_eq!(number_text(235.71, true), "235.71");
+        assert_eq!(number_text(5.58, true), "5.58");
+        assert_eq!(number_text(235.0, true), "235");
+        assert_eq!(number_text(1234.56, true), "1235");
+        assert_eq!(number_text(235.71, false), "236");
+        assert_eq!(number_text(837.4, false), "837");
+        assert!(big_digits("235.71").is_some());
+    }
 
     #[test]
     fn feed_titles_wrap_without_truncation() {

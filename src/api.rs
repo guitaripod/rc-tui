@@ -608,6 +608,15 @@ pub fn trailing_total(values: &[f64]) -> f64 {
     values.iter().rev().take(COMPARE_DAYS).sum()
 }
 
+/// RevenueCat's overview reports each project's totals in whole units, so a money card takes its
+/// value from the chart's exact daily series instead of the rounded overview figure.
+pub fn exact_total(metric: &mut OverviewMetric, series: &[f64]) {
+    if metric.period != "P28D" || series.is_empty() {
+        return;
+    }
+    metric.value = trailing_total(series);
+}
+
 /// The overview has no purchase count, so it is derived from the revenue chart's daily transactions.
 pub fn purchases_metric(daily: &[f64]) -> OverviewMetric {
     OverviewMetric {
@@ -1108,6 +1117,35 @@ mod tests {
             (value("revenue") - trailing_total(&snapshot.series["revenue"]).round()).abs() < 1e-9
         );
         assert!((value(PURCHASES) - trailing_total(&snapshot.series[PURCHASES])).abs() < 1e-9);
+    }
+
+    #[test]
+    fn an_exact_total_replaces_the_rounded_overview_value() {
+        let metric = OverviewMetric {
+            id: "revenue".to_string(),
+            name: "Revenue".to_string(),
+            unit: "$".to_string(),
+            period: "P28D".to_string(),
+            value: 100.0,
+        };
+        let series: Vec<f64> = std::iter::repeat_n(0.0, COMPARE_DAYS - 1)
+            .chain([100.42])
+            .collect();
+
+        let mut exact = metric.clone();
+        exact_total(&mut exact, &series);
+        assert!((exact.value - 100.42).abs() < 1e-9, "{exact:?}");
+
+        let mut stock = OverviewMetric {
+            period: "P0D".to_string(),
+            ..metric.clone()
+        };
+        exact_total(&mut stock, &series);
+        assert_eq!(stock.value, 100.0);
+
+        let mut empty = metric;
+        exact_total(&mut empty, &[]);
+        assert_eq!(empty.value, 100.0);
     }
 
     #[test]

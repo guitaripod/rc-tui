@@ -590,6 +590,11 @@ async fn fetch_source(
                 .map(|values| (metric.id.clone(), values))
         })
         .collect();
+    if let Some(values) = series.get("revenue")
+        && let Some(metric) = metrics.iter_mut().find(|metric| metric.id == "revenue")
+    {
+        api::exact_total(metric, values);
+    }
     if let Some(purchases) = cache.get(api::PURCHASES) {
         metrics.push(api::purchases_metric(purchases));
         series.insert(api::PURCHASES.to_string(), purchases.clone());
