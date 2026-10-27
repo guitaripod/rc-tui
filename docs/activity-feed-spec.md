@@ -420,7 +420,11 @@ columns for context rather than empty gutter.
   block entirely; the stream moves up. Never rotate or auto-dismiss it. The
   pinned review is omitted from the stream below so it appears exactly once;
   it also clears as soon as the full activity view has marked it read.
-- **Live stream.** Newest first, last **7 days**, with date separators. Ratings
+- **Live stream.** Newest first, the last **7 days** first, with date separators.
+  The rail exists to fill the gutter, so when a quiet week runs out of events
+  before the stream reaches the footer, it keeps going into older events under
+  an `EARLIER` rule instead of leaving the panel half empty. The 7-day window
+  stays the emphasis; the widening is what is left of the rail. Ratings
   join the stream as timed events when a new count is observed; the all-time
   summary rows are filtered out. The
   pulse is deliberately the only 24-hour surface; the stream stays useful for

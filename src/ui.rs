@@ -661,7 +661,10 @@ fn make_feed_card(entry: &Entry, width: u16, selected: bool) -> FeedCard {
 }
 
 fn draw_feed_card(frame: &mut Frame, area: Rect, entry: &Entry, selected: bool) {
-    let card = make_feed_card(entry, area.width, selected);
+    paint_feed_card(frame, area, make_feed_card(entry, area.width, selected));
+}
+
+fn paint_feed_card(frame: &mut Frame, area: Rect, card: FeedCard) {
     frame.render_widget(
         Block::default().style(Style::new().bg(card.background)),
         area,
@@ -704,6 +707,19 @@ fn draw_day_header(
     } else {
         label
     };
+    draw_rail_label(
+        frame,
+        Rect {
+            x: area.x,
+            y: area.y + row,
+            width: area.width,
+            height: 1,
+        },
+        text,
+    );
+}
+
+fn draw_rail_label(frame: &mut Frame, area: Rect, text: String) {
     let mut spans = vec![Span::styled(
         text.clone(),
         Style::new().fg(theme::dim()).add_modifier(Modifier::BOLD),
@@ -713,15 +729,7 @@ fn draw_day_header(
         format!("  {}", "─".repeat(remaining)),
         Style::new().fg(theme::border()),
     ));
-    frame.render_widget(
-        Paragraph::new(Line::from(spans)),
-        Rect {
-            x: area.x,
-            y: area.y + row,
-            width: area.width,
-            height: 1,
-        },
-    );
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 fn draw_pulse(frame: &mut Frame, area: Rect, entries: &[&Entry], now_ms: i64) {
@@ -1065,7 +1073,7 @@ fn draw_activity_rail(app: &App, frame: &mut Frame, area: Rect, now: Instant) {
             );
         }
     }
-    let entries = app.activity_entries_all(Range::D7);
+    let entries = app.activity_entries_all(Range::All);
     let (health, health_color) = feed_health(app);
     let unread = app.activity_unread();
     let rating_total = app.activity_rating_total();
@@ -1213,25 +1221,42 @@ fn draw_activity_rail(app: &App, frame: &mut Frame, area: Rect, now: Instant) {
         y += 1;
     }
 
+    let attention_key = attention.map(|entry| entry.id.as_str());
+    let footer_y = area.bottom().saturating_sub(1);
+    let (rows, hidden) = plan_rail(
+        entries.as_slice(),
+        attention_key,
+        inner_w,
+        y,
+        footer_y,
+        now_ms,
+    );
+    let mut latest = vec![
+        Span::styled(
+            "LATEST",
+            Style::new().fg(theme::dim()).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            if unread > 0 {
+                format!("   {} NEW", unread)
+            } else {
+                "   UP TO DATE".to_string()
+            },
+            Style::new().fg(if unread > 0 {
+                theme::money()
+            } else {
+                theme::dim()
+            }),
+        ),
+    ];
+    if hidden > 0 {
+        latest.push(Span::styled(
+            format!("   +{hidden}"),
+            Style::new().fg(theme::dim()),
+        ));
+    }
     frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(
-                "LATEST",
-                Style::new().fg(theme::dim()).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                if unread > 0 {
-                    format!("   {} NEW", unread)
-                } else {
-                    "   UP TO DATE".to_string()
-                },
-                Style::new().fg(if unread > 0 {
-                    theme::money()
-                } else {
-                    theme::dim()
-                }),
-            ),
-        ])),
+        Paragraph::new(Line::from(latest)),
         Rect {
             x: inner_x,
             y,
@@ -1240,55 +1265,7 @@ fn draw_activity_rail(app: &App, frame: &mut Frame, area: Rect, now: Instant) {
         },
     );
     y += 1;
-    let attention_key = attention.map(|entry| entry.id.as_str());
-    let footer_y = area.bottom().saturating_sub(1);
-    let mut last_day = String::new();
-    for entry in entries
-        .iter()
-        .filter(|entry| Some(entry.id.as_str()) != attention_key)
-    {
-        if y + 3 > footer_y {
-            break;
-        }
-        let day = feed_day(entry);
-        if day != last_day {
-            let count = entries
-                .iter()
-                .filter(|candidate| feed_day(candidate) == day)
-                .count();
-            draw_day_header(
-                frame,
-                Rect {
-                    x: inner_x,
-                    y,
-                    width: inner_w,
-                    height: 1,
-                },
-                0,
-                entry,
-                count,
-                now_ms,
-            );
-            y += 1;
-            last_day = day;
-        }
-        let card = make_feed_card(entry, inner_w, false);
-        if y + card.height + 1 > footer_y {
-            break;
-        }
-        draw_feed_card(
-            frame,
-            Rect {
-                x: inner_x,
-                y,
-                width: inner_w,
-                height: card.height,
-            },
-            entry,
-            false,
-        );
-        y += card.height;
-    }
+    draw_rail_rows(frame, inner_x, inner_w, y, rows, now_ms);
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled("storebot ", Style::new().fg(theme::dim())),
@@ -1304,6 +1281,98 @@ fn draw_activity_rail(app: &App, frame: &mut Frame, area: Rect, now: Instant) {
     );
     if let Some(celebration) = app.activity.current_celebration(now) {
         draw_celebration(frame, area, celebration, now, app.motion);
+    }
+}
+
+enum RailRow<'a> {
+    Day(&'a Entry, usize),
+    Earlier,
+    Card(FeedCard),
+}
+
+/// Lays out the rail stream newest first, widening past the 7-day window only once that window
+/// runs out so a quiet week never leaves the rail half empty.
+fn plan_rail<'a>(
+    entries: &[&'a Entry],
+    pinned: Option<&str>,
+    width: u16,
+    start_y: u16,
+    footer_y: u16,
+    now_ms: i64,
+) -> (Vec<RailRow<'a>>, usize) {
+    let cutoff = now_ms.saturating_sub(Range::D7.millis());
+    let stream: Vec<&'a Entry> = entries
+        .iter()
+        .copied()
+        .filter(|entry| Some(entry.id.as_str()) != pinned)
+        .collect();
+    let mut rows = Vec::new();
+    let mut y = start_y;
+    let mut last_day = String::new();
+    let mut widened = false;
+    let mut drawn = 0;
+    while drawn < stream.len() {
+        let entry = stream[drawn];
+        let card = make_feed_card(entry, width, false);
+        let height = card.height;
+        let day = feed_day(entry);
+        let fresh_day = day != last_day;
+        let widening = !widened && entry.timestamp() < cutoff;
+        let needed = height + u16::from(fresh_day) + u16::from(widening) + 1;
+        if y + needed > footer_y {
+            break;
+        }
+        if widening {
+            rows.push(RailRow::Earlier);
+            widened = true;
+            y += 1;
+        }
+        if fresh_day {
+            let count = entries
+                .iter()
+                .filter(|candidate| feed_day(candidate) == day)
+                .count();
+            rows.push(RailRow::Day(entry, count));
+            last_day = day;
+            y += 1;
+        }
+        rows.push(RailRow::Card(card));
+        y += height;
+        drawn += 1;
+    }
+    (rows, stream.len() - drawn)
+}
+
+fn draw_rail_rows(
+    frame: &mut Frame,
+    inner_x: u16,
+    inner_w: u16,
+    mut y: u16,
+    rows: Vec<RailRow<'_>>,
+    now_ms: i64,
+) {
+    for row in rows {
+        let area = Rect {
+            x: inner_x,
+            y,
+            width: inner_w,
+            height: 1,
+        };
+        match row {
+            RailRow::Day(entry, count) => {
+                draw_day_header(frame, area, 0, entry, count, now_ms);
+                y += 1;
+            }
+            RailRow::Earlier => {
+                draw_rail_label(frame, area, "EARLIER".to_string());
+                y += 1;
+            }
+            RailRow::Card(card) => {
+                let height = card.height;
+                paint_feed_card(frame, Rect { height, ..area }, card);
+                y += height;
+            }
+        }
     }
 }
 
@@ -5025,6 +5094,103 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect()
+    }
+
+    fn rail_rows(app: &mut App, width: u16, height: u16) -> Vec<String> {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal.draw(|frame| draw(app, frame)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let rail_width = ((width as f32 * 0.285) as u16).clamp(48, 64);
+        let rail_x = width - rail_width;
+        (0..height)
+            .map(|y| {
+                (rail_x + 2..rail_x + rail_width - 2)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    fn feed_purchase(id: &str, minutes_ago: i64) -> Entry {
+        let at = chrono::Utc::now().timestamp_millis() - minutes_ago * 60_000;
+        Entry {
+            id: id.to_string(),
+            kind: "purchase".to_string(),
+            at,
+            received_at: at,
+            app: format!("App {id}"),
+            project: format!("App {id}"),
+            country: "FI".to_string(),
+            source: "test".to_string(),
+            purchase: Some(crate::activity::Purchase {
+                amount: 4.99,
+                currency: "EUR".to_string(),
+                product: "Pro Monthly".to_string(),
+                event: "purchase".to_string(),
+                transaction_id: id.to_string(),
+                ..crate::activity::Purchase::default()
+            }),
+            ..Entry::default()
+        }
+    }
+
+    fn sparse_feed() -> Vec<Entry> {
+        let mut entries: Vec<Entry> = (0..5)
+            .map(|index| feed_purchase(&format!("fresh:{index}"), index * 1_400))
+            .collect();
+        for index in 0..21 {
+            entries.push(feed_purchase(
+                &format!("old:{index}"),
+                8 * 1_440 + index * 1_400,
+            ));
+        }
+        entries
+    }
+
+    #[test]
+    fn rail_fills_its_empty_rows_with_older_events() {
+        let mut app = home_app(vec![crate::app::Source::demo("One", "proj_demo_1")], None);
+        app.activity.entries = sparse_feed();
+        let rows = rail_rows(&mut app, 200, 54);
+        let latest = rows.iter().position(|row| row.contains("LATEST")).unwrap();
+        let footer = rows
+            .iter()
+            .position(|row| row.contains("FULL FEED"))
+            .unwrap();
+        let stream = &rows[latest + 1..footer];
+        assert!(
+            stream.iter().any(|row| row.contains("EARLIER")),
+            "the rail did not widen past the 7-day window"
+        );
+        assert!(
+            stream.iter().any(|row| row.contains("App old:0")),
+            "no older event was drawn"
+        );
+        let blank = stream
+            .iter()
+            .rev()
+            .take_while(|row| row.trim().is_empty())
+            .count();
+        assert!(blank <= 4, "rail left {blank} empty rows before the footer");
+    }
+
+    #[test]
+    fn rail_reports_events_it_could_not_fit() {
+        let mut app = home_app(vec![crate::app::Source::demo("One", "proj_demo_1")], None);
+        let entries: Vec<Entry> = (0..40)
+            .map(|index| feed_purchase(&format!("busy:{index}"), index * 60))
+            .collect();
+        app.activity.entries = entries;
+        let rows = rail_rows(&mut app, 200, 54);
+        let latest = rows
+            .iter()
+            .find(|row| row.contains("LATEST"))
+            .expect("no latest header");
+        assert!(
+            latest.contains('+'),
+            "an overflowing rail did not report the hidden count: {latest}"
+        );
+        assert!(!latest.contains("EARLIER"));
     }
 
     #[test]
