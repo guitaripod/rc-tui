@@ -429,10 +429,31 @@ fn feed_meta(entry: &Entry, now_ms: i64) -> String {
         EntryKind::Unknown => {}
     }
     if !entry.country.is_empty() {
-        parts.push(entry.country.clone());
+        parts.push(feed_flag(&entry.country));
     }
     parts.push(age_label(now_ms, entry.timestamp()));
     parts.join("  ·  ")
+}
+
+/// Returns the regional-indicator flag for a two-letter code, falling back to the uppercased code
+/// when the flag cannot be built.
+fn feed_flag(code: &str) -> String {
+    let flag = crate::countries::flag(code);
+    if flag.is_empty() {
+        code.trim().to_ascii_uppercase()
+    } else {
+        flag
+    }
+}
+
+/// Returns the feed place for a code: the flag plus English name when known, otherwise the code.
+fn feed_place(code: &str) -> String {
+    let place = crate::countries::label(code);
+    if place.is_empty() {
+        feed_flag(code)
+    } else {
+        place
+    }
 }
 
 fn feed_stamp(entry: &Entry) -> String {
@@ -846,7 +867,11 @@ fn draw_activity_ticker(app: &App, frame: &mut Frame, area: Rect, now: Instant) 
             };
             lines.push(Line::from(vec![
                 Span::styled(
-                    format!("    {}  ·  {}", feed_subtitle(entry), entry.country),
+                    format!(
+                        "    {}  ·  {}",
+                        feed_subtitle(entry),
+                        feed_flag(&entry.country)
+                    ),
                     Style::new().fg(theme::dim()),
                 ),
                 Span::styled(suffix, Style::new().fg(health_color)),
@@ -1039,7 +1064,7 @@ fn draw_attention(
             Paragraph::new(Line::from(Span::styled(
                 format!(
                     "{} · written review · {}",
-                    entry.country,
+                    feed_flag(&entry.country),
                     age_label(now_ms, entry.timestamp())
                 ),
                 Style::new().fg(theme::dim()),
@@ -1798,7 +1823,12 @@ fn draw_activity_detail(frame: &mut Frame, area: Rect, entry: Option<&Entry>, no
                 );
                 lines.push(Line::default());
                 detail_field(&mut lines, "EVENT", feed_event_label(entry), inner_width);
-                detail_field(&mut lines, "MARKET", &entry.country, inner_width);
+                detail_field(
+                    &mut lines,
+                    "MARKET",
+                    &feed_place(&entry.country),
+                    inner_width,
+                );
                 detail_field(
                     &mut lines,
                     "SOURCE",
@@ -1854,7 +1884,12 @@ fn draw_activity_detail(frame: &mut Frame, area: Rect, entry: Option<&Entry>, no
                 );
             }
             lines.push(Line::default());
-            detail_field(&mut lines, "MARKET", &entry.country, inner_width);
+            detail_field(
+                &mut lines,
+                "MARKET",
+                &feed_place(&entry.country),
+                inner_width,
+            );
             if !review.author.is_empty() {
                 detail_field(&mut lines, "AUTHOR", &review.author, inner_width);
             }
@@ -1918,7 +1953,12 @@ fn draw_activity_detail(frame: &mut Frame, area: Rect, entry: Option<&Entry>, no
                     inner_width,
                 );
                 if !rating.summary {
-                    detail_field(&mut lines, "MARKET", &entry.country, inner_width);
+                    detail_field(
+                        &mut lines,
+                        "MARKET",
+                        &feed_place(&entry.country),
+                        inner_width,
+                    );
                     detail_field(
                         &mut lines,
                         "RECEIVED",
@@ -5145,6 +5185,23 @@ mod tests {
             ));
         }
         entries
+    }
+
+    #[test]
+    fn feed_meta_shows_a_flag_instead_of_a_country_code() {
+        let now = chrono::Utc::now().timestamp_millis();
+        let mut entry = feed_purchase("flag:1", 5);
+        entry.country = "US".to_string();
+        let meta = feed_meta(&entry, now);
+        assert!(meta.contains("\u{1F1FA}\u{1F1F8}"), "no flag in {meta}");
+        assert!(!meta.contains("US"), "the code is still in {meta}");
+
+        assert_eq!(feed_flag("jp"), "\u{1F1EF}\u{1F1F5}");
+        assert_eq!(feed_flag("ZZ"), "\u{1F1FF}\u{1F1FF}");
+        assert_eq!(feed_flag("Unknown"), "UNKNOWN");
+        assert_eq!(feed_flag(""), "");
+        assert_eq!(feed_place("JP"), "\u{1F1EF}\u{1F1F5} Japan");
+        assert_eq!(feed_place(""), "");
     }
 
     #[test]

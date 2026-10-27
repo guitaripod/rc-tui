@@ -431,7 +431,9 @@ columns for context rather than empty gutter.
   low-volume apps whose last review was days ago. Every event is a compact card:
   - first line: time, glyph, full app title, right-aligned amount or stars;
   - second line: full product name, or the full written-review title in quotes;
-  - third line: event type, territory and age.
+  - third line: event type, territory and age. The territory is its flag
+    (regional-indicator pair), not the two-letter code; the detail pane spells
+    it out as `🇯🇵 Japan`.
   Titles wrap to as many lines as they need; they are never shortened with an
   ellipsis. The rail needs 48–64 columns because a title may wrap there.
 - The rail is not focusable. `f` opens the full activity view; the rail itself
