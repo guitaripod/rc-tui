@@ -413,15 +413,12 @@ fn feed_meta(entry: &Entry, now_ms: i64) -> String {
     match entry.kind() {
         EntryKind::Purchase => {
             parts.push(feed_event_label(entry).to_string());
-            if let Some(purchase) = &entry.purchase {
-                if purchase.first_ever {
-                    parts.push("FIRST EVER".to_string());
-                } else if purchase.first_today {
-                    parts.push("FIRST TODAY".to_string());
-                }
-                if purchase.estimated {
-                    parts.push("ESTIMATED".to_string());
-                }
+            if entry
+                .purchase
+                .as_ref()
+                .is_some_and(|purchase| purchase.estimated)
+            {
+                parts.push("ESTIMATED".to_string());
             }
         }
         EntryKind::Review => parts.push("written review".to_string()),
@@ -1844,21 +1841,6 @@ fn draw_activity_detail(frame: &mut Frame, area: Rect, entry: Option<&Entry>, no
                     detail_field(&mut lines, "TXN", &purchase.transaction_id, inner_width);
                 }
                 lines.push(Line::default());
-                if purchase.first_ever || purchase.first_today {
-                    let mut tags = Vec::new();
-                    if purchase.first_ever {
-                        tags.push("FIRST EVER");
-                    }
-                    if purchase.first_today {
-                        tags.push("FIRST TODAY");
-                    }
-                    draw_detail_line(
-                        &mut lines,
-                        &tags.join("  ·  "),
-                        inner_width,
-                        Style::new().fg(theme::warn()),
-                    );
-                }
                 if purchase.estimated {
                     draw_detail_line(
                         &mut lines,
@@ -4915,7 +4897,10 @@ mod tests {
         assert!(!text.contains('…'));
         assert!(text.contains("Tailscode"));
         assert!(text.contains("Pro Annual"));
-        assert!(text.contains("FIRST EVER"));
+        assert!(
+            !text.contains("FIRST"),
+            "first-sale tags belong to celebrations, not the card"
+        );
     }
 
     #[test]
