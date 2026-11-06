@@ -10,6 +10,9 @@ feed, a project picker, 7/28/90-day detail and per-project health sit around it.
 
 *`rc-tui --demo` — 17 mocked projects, no credentials. Click for full size.*
 
+**Finished.** 0.5.0 is the last release and rc-tui is no longer maintained. It keeps
+working for as long as RevenueCat's API v2 and storebot's feed format stay as they are.
+
 [Showcase](docs/showcase.png): home, one app, light theme, wall, metric detail, a smaller terminal and the full feed.
 
 ## Philosophy
