@@ -1546,6 +1546,7 @@ mod tests {
                 title: "Calm".to_string(),
                 body: body.to_string(),
                 author: "someone".to_string(),
+                answered: false,
             }),
             ..Entry::default()
         };

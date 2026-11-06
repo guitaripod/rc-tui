@@ -255,6 +255,9 @@ pub struct Review {
     pub body: String,
     #[serde(default)]
     pub author: String,
+    /// True once the developer has replied in App Store Connect, as storebot reports it.
+    #[serde(default)]
+    pub answered: bool,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -289,6 +292,13 @@ impl Entry {
 
     pub fn is_history(&self) -> bool {
         self.rating.as_ref().is_some_and(|rating| rating.summary)
+    }
+
+    /// A low score that still waits for the developer: one or two stars, and
+    /// for a written review, no reply in App Store Connect yet.
+    pub fn needs_attention(&self) -> bool {
+        let answered = self.review.as_ref().is_some_and(|review| review.answered);
+        self.stars().is_some_and(|stars| (1..=2).contains(&stars)) && !answered
     }
 
     pub fn stars(&self) -> Option<i64> {
@@ -557,13 +567,7 @@ impl Activity {
             .filter(|entry| entry.received_at > self.seen_at)
             .filter(|entry| entry.timestamp() >= cutoff)
             .filter(|entry| entry.scope_matches(scope_id, scope_label))
-            .filter(|entry| {
-                entry.kind() == EntryKind::Review
-                    && entry
-                        .review
-                        .as_ref()
-                        .is_some_and(|review| (1..=2).contains(&review.stars))
-            })
+            .filter(|entry| entry.kind() == EntryKind::Review && entry.needs_attention())
             .max_by_key(|entry| entry.received_at)
     }
 
@@ -873,6 +877,7 @@ fn demo_entries(now: i64) -> Vec<Entry> {
                 title: title.to_string(),
                 body: body.to_string(),
                 author: author.to_string(),
+                answered: false,
             }),
             ..Entry::default()
         }
@@ -1130,6 +1135,28 @@ mod tests {
         let warning = celebration_for(&warning);
         assert_eq!(warning.level, CelebrationLevel::Major);
         assert_eq!(warning.headline, "NEEDS ATTENTION");
+    }
+
+    #[test]
+    fn answered_reviews_stop_needing_attention() {
+        let now = 1_760_000_000_000;
+        let mut review = entry("proj1", "One");
+        review.id = "review:1".to_string();
+        review.kind = "review".to_string();
+        review.purchase = None;
+        review.received_at = now;
+        review.review = Some(Review {
+            stars: 2,
+            ..Review::default()
+        });
+        let mut activity = Activity::new(None, true, None, Instant::now());
+        activity.entries = vec![review];
+        activity.seen_at = 0;
+        assert!(activity.attention(None, "All projects", now).is_some());
+
+        activity.entries[0].review.as_mut().unwrap().answered = true;
+        assert!(!activity.entries[0].needs_attention());
+        assert!(activity.attention(None, "All projects", now).is_none());
     }
 
     #[test]

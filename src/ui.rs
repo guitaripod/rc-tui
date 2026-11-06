@@ -1423,7 +1423,7 @@ fn draw_summary(frame: &mut Frame, area: Rect, entries: &[&Entry], now_ms: i64, 
     ];
     let attention = entries
         .iter()
-        .filter(|entry| entry.stars().is_some_and(|stars| stars <= 2))
+        .filter(|entry| entry.needs_attention())
         .count();
     if attention > 0 {
         spans.push(Span::styled(
