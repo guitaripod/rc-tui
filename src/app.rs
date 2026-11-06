@@ -2480,6 +2480,7 @@ mod tests {
         app.last_input = now - Duration::from_secs(30);
         app.animating_until = now - Duration::from_secs(1);
         app.status = Status::Idle;
+        app.activity.celebration = None;
         assert_eq!(app.poll_timeout(), Duration::from_secs(1));
     }
 
